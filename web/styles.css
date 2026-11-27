@@ -764,6 +764,7 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
   padding: 8px 2px; cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .seg > button.on { background: var(--accent); color: #fff; box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 28%, transparent), 0 0 14px color-mix(in srgb, var(--accent) 45%, transparent); }
 .seg > button.red { color: var(--danger); } .seg > button.red.on { background: var(--danger); color: #fff; }
+.seg > button:disabled { opacity: 0.35; cursor: default; }   /* a choice this radio cannot reach */
 .ctlrow { display: flex; gap: 8px; align-items: center; margin-top: 6px; }
 .ctlrow > .seg { flex: 1; }
 .rl { flex: none; color: var(--muted); font-size: 9px; letter-spacing: 2px; }
@@ -893,7 +894,27 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
 
 /* RDS as its own strip under the card (the Android app's), not an overlay on the waterfall */
 .rdsbar.station { position: relative; left: auto; right: auto; top: auto; margin-bottom: 6px; padding: 8px 10px; font-size: 12px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); overflow: hidden; }
-.rdsbar.station b:first-of-type { font-size: 15px; letter-spacing: 3px; color: var(--ink); }
+.rdsbar.station { display: flex; align-items: center; gap: 10px; }
+.rdsbar.station b.ps { flex: none; font-size: 19px; font-weight: 900; letter-spacing: 3px; color: var(--ink); max-width: 45%; overflow: hidden; text-overflow: ellipsis; }
+.rdsbar.station b.ps.none { color: var(--muted); }
+.rdsbar .rdscol { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.rdsbar .rdspills { white-space: nowrap; overflow: hidden; }
+.rdsbar .rdsclip { display: block; overflow: hidden; white-space: nowrap; }
+/* the strip's pills (LOCKED / LISTENING, program type, TP, PI) and the line when a station sends no radiotext */
+.rdsbar .rp { display: inline-block; font-size: 9px; letter-spacing: 1px; font-weight: 700; color: var(--muted); border: 1px solid var(--line); border-radius: 4px; padding: 1px 5px; margin-right: 5px; vertical-align: 2px; }
+.rdsbar .rp.ok { color: var(--ok); border-color: var(--ok); }
+.rdsbar .rp.hot { color: var(--accent); border-color: var(--accent); }
+.rdsbar .rq { color: var(--muted); }
+/* where a transmit control would be on a receive-only radio (the native apps' ReceiveOnlyNote) */
+.rxonly { display: flex; flex-direction: column; gap: 6px; padding: 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); opacity: 0.85; }
+.rxonly[hidden] { display: none; }
+.rxonly b { color: var(--muted); font-size: 13px; letter-spacing: 2px; }
+.rxonly span { color: var(--ink); font-size: 11px; }
+/* Transmit, Replay: one row per capture */
+.tx-replay { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
+.tx-replay .chip { width: 100%; text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.accard-sq { font-size: 12px; font-weight: 700; color: var(--ink); }
+.accard-sq.alert { color: var(--danger); }
 @media (max-width: 719.98px) {
   /* gain lives in Settings on a phone, as in the Android app */
   .view:not(.settings):not(.audio):not(.aprs) .gainwrap { display: none; }
@@ -934,6 +955,18 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
 .radiocard.on { border-color: var(--ok); background: color-mix(in srgb, var(--ok) 8%, var(--surface)); }
 .radiocard div { flex: 1; min-width: 0; } .radiocard b { display: block; letter-spacing: 2px; font-size: 11px; color: var(--accent2); } .radiocard.on b { color: var(--ok); }
 .radiocard small { color: var(--muted); font-size: 10px; }
+/* the radio card's live rows: name and tuner, TUNED / RATE / GAIN, and the state badges */
+.radiocard .rc-head { display: flex; align-items: center; gap: 8px; }
+.radiocard .rc-head b { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; color: var(--ink); }
+.radiocard .rc-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--danger); flex: none; }
+.radiocard.on .rc-dot { background: var(--ok); }
+.radiocard .rc-stats { display: flex; gap: 8px; margin: 8px 0 6px; }
+.radiocard .rc-stat { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.radiocard .rc-stat small { font-size: 9px; letter-spacing: 2px; }
+.radiocard .rc-stat b { font-size: 13px; letter-spacing: 0; color: var(--ink); white-space: nowrap; }
+.radiocard .rc-badges { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 6px; }
+.radiocard .rc-badge { font-size: 9px; letter-spacing: 1px; color: var(--muted); border: 1px solid var(--line); border-radius: 4px; padding: 3px 6px; white-space: nowrap; }
+.radiocard .rc-badge.hot { color: var(--accent2); border-color: var(--accent2); }
 .set-jumps { margin: 8px 0 4px; }
 .pill { flex: none; background: var(--surface); color: var(--ink); border: 1px solid var(--line); border-radius: 50px; padding: 6px 12px; font-size: 10px; letter-spacing: 1.5px; font-weight: 700; cursor: pointer; }
 .sset { margin-top: 14px; scroll-margin-top: 8px; }
@@ -952,6 +985,47 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
 #setview .sset.noanim, #setview .sset.noanim * { transition: none !important; }
 #setview .sset-in > .srow:first-child, #setview .sset-in > .panel:first-child, #setview .sset-in > .skins:first-child { margin-top: 0; }
 .sset-sub { color: var(--muted); font-size: 9px; letter-spacing: 2px; margin: 10px 2px 4px; }
+.sset-note { color: var(--muted); font-size: 10px; margin: 6px 4px 0; }
+/* BAR: one row per app, a tick, its name and blurb, and the ≡ handle that drags it */
+.barlist { margin-top: 8px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); overflow: hidden; }
+.barrow { display: flex; align-items: center; height: 52px; background: var(--surface); border-top: 1px solid var(--line); position: relative; transition: transform .15s ease; }
+.barrow:first-child { border-top: 0; }
+.barrow.drag { z-index: 2; transition: none; background: var(--panel); box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45); }
+.barrow[hidden] { display: none; }
+.barck { flex: none; width: 22px; height: 22px; margin: 0 15px; border-radius: 6px; border: 2px solid var(--muted); background: none; color: #05080a; font-weight: 900; font-size: 13px; padding: 0; cursor: pointer; display: grid; place-items: center; }
+.barrow.on .barck { background: var(--seg); border-color: var(--seg); }
+.barname { flex: 1; min-width: 0; cursor: pointer; }
+.barname b { display: block; font-size: 13px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.barrow.on .barname b { color: var(--seg); }
+.barname small { display: block; font-size: 10px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.barhandle { flex: none; width: 52px; height: 52px; display: grid; place-items: center; font-size: 22px; color: var(--muted); cursor: grab; touch-action: none; user-select: none; }
+.barhandle:focus-visible { outline: 2px solid var(--accent); outline-offset: -6px; border-radius: 8px; }
+.barrow.drag .barhandle { cursor: grabbing; }
+/* LOOK, WATERFALL: each palette with its colors */
+.wfpals { border: 1px solid var(--line); border-radius: 12px; background: var(--surface); overflow: hidden; }
+.wfpal { display: flex; align-items: center; gap: 10px; width: 100%; min-height: 48px; padding: 0 14px; background: none; border: 0; border-top: 1px solid var(--line); color: var(--ink); font: inherit; font-size: 12px; text-align: left; cursor: pointer; }
+.wfpal:first-child { border-top: 0; }
+.wfpal span { flex: 1; min-width: 0; }
+.wfpal i { flex: none; width: 110px; height: 14px; border-radius: 3px; }
+.wfpal em { font-style: normal; color: var(--muted); }
+.wfpal.on span, .wfpal.on em { color: var(--accent); font-weight: 700; }
+/* HOW IT WORKS: every app, each opening to what it does */
+.how-list { border: 1px solid var(--line); border-radius: 12px; background: var(--surface); overflow: hidden; }
+.how-row { border-top: 1px solid var(--line); }
+.how-row:first-child { border-top: 0; }
+.how-row summary { display: flex; align-items: center; gap: 8px; min-height: 46px; padding: 0 14px; cursor: pointer; list-style: none; }
+.how-row summary::-webkit-details-marker { display: none; }
+.how-row summary::after { content: '▾'; color: var(--muted); font-size: 12px; }
+.how-row[open] summary::after { content: '▴'; }
+.how-row summary b { flex: none; width: 128px; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.how-row summary small { flex: 1; min-width: 0; color: var(--muted); font-size: 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.how-body { padding: 0 14px 12px; display: flex; flex-direction: column; gap: 6px; align-items: flex-start; }
+.how-body p { margin: 0; font-size: 11px; line-height: 1.45; color: var(--ink); }
+.how-body p.how-tip { color: var(--muted); font-size: 10px; }
+.how-badges { display: flex; flex-wrap: wrap; gap: 6px; }
+.how-badges .rc-badge { font-size: 9px; letter-spacing: 1px; color: var(--muted); border: 1px solid var(--line); border-radius: 4px; padding: 3px 6px; }
+.how-badges .rc-badge.hot { color: var(--accent2); border-color: var(--accent2); }
+.how-row[hidden], .tip-row[hidden] { display: none; }
 .srow { display: flex; align-items: center; gap: 10px; padding: 10px 12px; background: var(--surface); border: 1px solid var(--line); border-radius: 12px; margin-top: 6px; }
 .srl { flex: 1; min-width: 0; } .srl b { display: block; font-size: 13px; } .srl small { display: block; color: var(--muted); font-size: 10px; margin-top: 2px; }
 .src { flex: none; display: flex; align-items: center; gap: 6px; max-width: 62%; }
@@ -1287,6 +1361,12 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
 .view.sondes.sondefull .mt-cards, .view.sondes.sondefull .mt-cards { max-height: none; height: 100%; }
 .view.sondes.sondefull .mt-cards { grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); }
 .view.sondes.sondefull .mt-stage .map { height: 100%; }
+/* Trains full screen: the view switch and the cards, nothing else */
+.view.trains.trainsfull { position: fixed; inset: 0; z-index: 60; margin: 0; padding: 10px; background: var(--paper); display: block !important; overflow: hidden; }
+.view.trains.trainsfull > .visual, .view.trains.trainsfull > .controls > :not(.tr-stage):not(.ctlrow:has([data-trview])) { display: none !important; }
+.view.trains.trainsfull > .controls { height: 100%; max-height: none; display: flex !important; flex-direction: column; overflow: hidden; padding: 0; }
+.view.trains.trainsfull .tr-stage { flex: 1; min-height: 0; overflow: auto; margin-top: 8px; }
+.view.trains.trainsfull .mt-cards { max-height: none; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); }
 
 /* ---- Trains: the headline, channel lamps, end-of-train and PTC station cards ---- */
 .tr-lamps { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; margin: 6px 2px; font-size: 10px; font-weight: 700; letter-spacing: 2px; color: var(--muted); }

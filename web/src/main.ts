@@ -9,7 +9,7 @@ import type { P25Status } from './dsp/ham/p25.js';
 import { lookupCall, offlineInfo, latLonToGrid, gridToLatLon, distanceBearing, toAdif, fromAdif, bandOfHz, parseCall, type Qso, type CallInfo } from './callsign.js';
 import { SKINS, applySkin, currentSkin, loadSkin } from './theme.js';
 import { glyph } from './glyphs.js';
-import { Scope, WF_ICON, centredLabels, rangeLabels, rowToSpec } from './scope.js';
+import { Scope, WF_ICON, centredLabels, rangeLabels, rowToSpec, setWaterfallLut } from './scope.js';
 import { btleChannelFreq } from './dsp/btle.js';
 import { BleTracker, KIND_LABEL, parseAdv, type BleDevice } from './ble.js';
 import { AcarsPlanes, labelMeaning, normReg, parseAcarsLine, type AcarsMsg } from './acars-planes.js';
@@ -30,7 +30,7 @@ import { SpectrumUi } from './spectrum-ui.js';
 import type { Burst } from './dsp/analyzer/capture.js';
 import { Tx, type SigMode } from './tx.js';
 import * as Apps from './tx-apps.js';
-import type { Aircraft } from './dsp/adsb.js';
+import { squawkMeaning, type Aircraft } from './dsp/adsb.js';
 import type { Vessel } from './dsp/ais.js';
 import type { AprsStation } from './dsp/aprs.js';
 import { aprsSymbolName } from './aprs-info.js';
@@ -72,12 +72,14 @@ import { SONDE_BANDS, SONDE_WIDE, SONDE_NARROW, wideCenter as sondeWideCenter, n
 import type { SondeRow } from './dsp/sonde/track.js';
 import type { HamMode, AgcMode } from './dsp/ham/demod.js';
 import { SATS, Sgp4, look, doppler, passes, fetchTles, type Tle, type Pass, dopplerUp, type SatService } from './sat.js';
-import { ISM_COUNTS } from './dsp/ism/counts.js';
 import type { CellSnap, CellRow, SibRec as CellSibRec } from './dsp/cell/cell.js';
 import type { FeedRow as CellFeedRow } from './dsp/cell/feed.js';
 import type { Mib as CellMib } from './dsp/cell/pbch.js';
 import { groupAlerts, type AlertGroup } from './dsp/cell/cbs.js';
 import { fieldGroups } from './dsp/cell/sysinfo.js';
+import { loadBar, saveBar, barList, toggleBar, moveBar, startApp, type BarState } from './bar-prefs.js';
+import { WF_PALETTES, isWfPalette, wfLut, type WfPalette } from './wf-palette.js';
+import { HOW, TIPS, NEEDS_HACKRF } from './how.js';
 import { parseWarningArea, parseGeoTrigger, areaRelation, type WarningArea } from './dsp/cell/area.js';
 import { CELL_BANDS, findCarriers, newProfile, scanCandidates, stitch, type CarrierGuess, type Profile } from './dsp/cell/bands.js';
 import { EOT_CENTER as TR_EOT_CENTER, EOT_RATE as TR_EOT_RATE, EOT_NARROW as TR_EOT_NARROW, PTC_CENTER as TR_PTC_CENTER, PTC_RATE as TR_PTC_RATE, PTC_NARROW as TR_PTC_NARROW, PTC_KIND_LABEL, stationPeriod, stationVaries, symHex, type EotUnit, type HotHeard, type PtcStation } from './dsp/trains.js';
@@ -91,7 +93,7 @@ type Mode = 'WFM' | 'NFM' | 'AM' | 'USB' | 'LSB' | 'NONE';
  * decoders (ADS-B, BTLE, …) keep their own 2 Msps — their timing is built around it and they make no audio.
  */
 const RX_RATE = 1_920_000;
-type AppId = 'transmit' | 'troll' | 'ham' | 'hamplus' | 'cb' | 'js8' | 'audio' | 'hd' | 'prowl' | 'sat' | 'adsb' | 'uat' | 'ais' | 'aprs' | 'pager' | 'ert' | 'lora' | 'btle' | 'vdl2' | 'acars' | 'trains' | 'fleet' | 'cell' | 'atsc' | 'sondes' | 'subghz' | 'devices' | 'spectrum' | 'analyzer' | 'lookingglass' | 'search' | 'capture' | 'settings';
+type AppId = 'transmit' | 'troll' | 'ham' | 'hamplus' | 'cb' | 'js8' | 'audio' | 'hd' | 'prowl' | 'sat' | 'adsb' | 'uat' | 'ais' | 'aprs' | 'pager' | 'ert' | 'lora' | 'btle' | 'vdl2' | 'acars' | 'trains' | 'fleet' | 'cell' | 'atsc' | 'sondes' | 'devices' | 'spectrum' | 'analyzer' | 'lookingglass' | 'search' | 'capture' | 'settings';
 interface AppDef { id: AppId; title: string; blurb: string; cat: 'Receive' | 'Analyze' | 'Tools' | 'Transmit'; }
 
 const APPS: AppDef[] = [
@@ -174,7 +176,6 @@ const state = {
   btleCh: 37, threshold: 15, pager: 'both' as 'flex' | 'pocsag' | 'both',
   /** The pager app's mode, as on Android: MULTI hunts the span's carriers, SINGLE decodes the tuned channel. */
   pagerMulti: true,
-  ism: { weather: true, remotes: true, cars: true },
   r433: { heard: [] as HeardDevice[], stats: null as R433Report | null, hop: false, band: 0,
     protocols: [] as R433Protocol[], showProtocols: false, span: 250_000, filter: 'all' as R433Filter, sel: '', hist: new Map<string, { t: number; d: HeardDevice; hz: number }[]>() }, muted: false, adsbView: 'map' as 'map' | 'list', adsbFollow: true, adsbSel: '' as string, home: null as { lat: number; lon: number } | null,
   capturing: false, captureName: '', captureBytes: 0, captures: [] as { name: string; size: number }[],
@@ -968,6 +969,7 @@ function open(app: AppId | null): void {
   if ((app as string) === 'subghz' || (app as string) === 'tpms') app = 'devices';      // Sub-GHz and TPMS are part of Devices now
   if (hiddenApp(app)) app = null;                         // an app this radio hides (TX and Troll on an RTL-SDR) opens Home instead
   if (app === 'settings') { openSettings(); return; }
+  noteOpened(app);
   if (app === 'acars' || app === 'vdl2') { try { localStorage.setItem(FLIGHT_MSGS_KEY, app); } catch { /* no storage */ } }
   if (state.capturing) { worker?.postMessage({ type: 'capture', cmd: 'stop' }); state.capturing = false; }
   if (state.scanning && app !== 'audio') setScanning(false);
@@ -1034,7 +1036,6 @@ function open(app: AppId | null): void {
     case 'cb': cbOpen(); break;
     case 'cell': cellOpen(); break;
     case 'atsc': atscOpen(); break;
-    case 'subghz': configure('NONE', 433_920_000, 2e6, 32, 40, true, 'subghz'); worker?.postMessage({ type: 'ismFamilies', ...state.ism }); break;
     case 'devices':
       // Always open on 433.92, whatever the last visit left behind. The band is remembered while the app is
       // up, and the hop moves it along on its own, so without this a session that wandered to 915 would come
@@ -1279,11 +1280,11 @@ function prowlPause(): void {
  * Stay on something it found and keep listening there. The hunt pauses rather than ending, so nothing will move
  * the receiver again until HUNT is pressed.
  */
-function prowlHoldAt(h: ProwlHit): void {
+function prowlHoldAt(hz: number, mode: Mode = hz > 117e6 && hz < 138e6 ? 'AM' : 'NFM'): void {
   prowlPause();
-  state.prowl.held = h.hz;
-  setMode(h.mode); tune(h.hz);
-  prowlNote(`holding ${mhz(h.hz)} · press HUNT to carry on looking`);
+  state.prowl.held = hz;
+  setMode(mode); tune(hz);
+  prowlNote(`holding ${mhz(hz)} · press HUNT to carry on looking`);
   refreshProwl();
 }
 
@@ -1294,6 +1295,7 @@ function renderProwl(view: HTMLElement): void {
       <div class="row"><button class="chip primary" id="prowl-go" style="flex:1"></button><button class="chip" id="prowl-skip">SKIP</button></div>
       <div class="caption">NOW</div><div class="panel dmrslot" id="prowl-status"></div>
       <div id="prowl-note" class="info"></div>
+      <div class="caption">IN VIEW &middot; tap one to hold there</div>${hsHtml('<div id="prowl-tiles" class="tiles"></div>')}
       <div class="caption">SPAN &middot; wider hears more at once, narrower hears further into the noise</div>
       <div class="row">${[1.92e6, 7.68e6, 19.2e6].map(r => `<button class="chip" data-prate="${r}">${r / 1e6} MHz</button>`).join('')}</div>
       <div class="caption">WHEN THIS SPAN GOES QUIET</div>
@@ -1312,11 +1314,29 @@ function renderProwl(view: HTMLElement): void {
   };
   $('prowl-clear').onclick = () => { state.prowl.log.length = 0; refreshProwl(); };
   $('prowl-sweep').onclick = () => { state.prowl.sweep = !state.prowl.sweep; state.prowl.movedAt = performance.now(); refreshProwl(); };
+  $('prowl-tiles').onclick = (e) => { const b = (e.target as HTMLElement).closest<HTMLElement>('[data-pt]'); if (b) { prowlHoldAt(Number(b.dataset.pt)); wakeAudio(); } };
+  setMeter(0, 'SPEECH —', PROWL_VOICE, [[0, '0'], [0.5, '0.5'], [1, '1.0 SPEECH']]);
   refreshProwl();
 }
 
+/** The strongest signals in view (the native app's tiles): a tap holds the receiver on one. */
+function refreshProwlTiles(): void {
+  const el = q('#prowl-tiles'); if (!el) return;
+  const t = state.prowl.target, at = t ? t.hz : state.prowl.held;
+  const top = [...lastSignals].sort((a, b) => b.snr - a.snr).slice(0, 8);
+  el.innerHTML = top.length
+    ? top.map(s => `<button class="tl${at !== null && Math.abs(at - s.hz) < 5000 ? ' on' : ''}" data-pt="${Math.round(s.hz)}"><b>${(s.hz / 1e6).toFixed(3)}</b><small>${s.cls ? `${esc(s.cls)}${s.conf < 0.6 ? '?' : ''} · ` : ''}${Math.round(s.snr)} dB</small></button>`).join('')
+    : '<span class="info">nothing in view</span>';
+}
 function refreshProwl(): void {
   const p = state.prowl;
+  if (state.app === 'prowl') {
+    // the lamp says what it is doing, the meter how much the channel sounds like speech against the mark it must pass
+    const t = p.target, voice = !!t && t.judged && p.score >= PROWL_VOICE;
+    if (voice) setLamp('VOICE', 'ok'); else if (p.held !== null) setLamp('HOLDING', 'ok'); else if (p.on) setLamp('HUNTING', 'amber', true); else setLamp('STOPPED');
+    setMeter(t ? Math.max(0, Math.min(1, p.score)) : 0, t ? `SPEECH ${p.score.toFixed(2)} · best ${p.best.toFixed(2)}` : 'SPEECH —', PROWL_VOICE);
+    refreshProwlTiles();
+  }
   const go = q('#prowl-go');
   if (go) { go.textContent = p.on ? 'STOP HUNTING' : 'HUNT'; go.classList.toggle('on', p.on); }
   const skip = q('#prowl-skip'); if (skip) skip.textContent = p.on ? 'SKIP' : 'NEXT';
@@ -1343,7 +1363,7 @@ function refreshProwl(): void {
     const i = Number(b.dataset.ph);
     if ((ev.target as HTMLElement).dataset.phx !== undefined) { p.log.splice(i, 1); refreshProwl(); return; }
     const h = p.log[i];
-    if (h) prowlHoldAt(h);
+    if (h) prowlHoldAt(h.hz, h.mode);
   });
 }
 
@@ -1994,7 +2014,6 @@ function render(app: AppId | null): void {
     case 'btle': renderBle(view); break;
     case 'vdl2': renderAcars(view, 'vdl2'); break;
     case 'acars': renderAcars(view, 'acars'); break;
-    case 'subghz': renderPacket(view, app); break;
     case 'devices': renderR433(view); break;
     case 'analyzer': renderAnalyzer(view); break;
     case 'spectrum': renderSpectrum(view); break;
@@ -2168,6 +2187,8 @@ function tunableScope(id: string, rows: number, spectrumHeight?: number): Scope 
     onTap: f => {
       // the hunter's span stays put: a tap picks the carrier there for its own receiver (and turns AUTO off)
       if (state.app === 'pager' && state.pagerMulti) { worker?.postMessage({ type: 'hunt', cmd: 'pick', hz: hzAt(f) }); wakeAudio(); return; }
+      // Prowl: a tap holds the hunt on what is under it
+      if (state.app === 'prowl') { prowlHoldAt(target(f).hz); wakeAudio(); return; }
       const t = target(f); if (t.s) fitSignal(t.s); tune(t.hz, true); wakeAudio();
     },
     onPreview: f => previewFreq(f === null ? null : target(f).hz),
@@ -2812,7 +2833,10 @@ function satApplyService(): void {
   const p = q('#sat-panel'); if (p) { (p as HTMLElement).hidden = !(k === 'packet' || k === 'sstv' || k === 'apt' || k === 'lrpt'); }
   const pk = q('#sat-packets'); if (pk) { (pk as HTMLElement).hidden = k !== 'packet'; }
   const im = q('#sat-image'); if (im) { (im as HTMLElement).hidden = !(k === 'sstv' || k === 'apt' || k === 'lrpt'); }
-  const pt = q('#sat-ptt'); if (pt) { (pt as HTMLElement).hidden = !cur.svc.up; }
+  // an RTL-SDR cannot key the uplink: it says so where the PTT would be
+  const rxOnly = radio?.kind === 'rtlsdr';
+  const pt = q('#sat-ptt'); if (pt) { (pt as HTMLElement).hidden = !cur.svc.up || rxOnly; }
+  const ro = q('#sat-rxonly'); if (ro) { (ro as HTMLElement).hidden = !cur.svc.up || !rxOnly; }
 }
 let satTrackAt = 0;
 /** The map in the SATELLITE tab: where the bird is now, its footprint, and the next 90 minutes of ground track. */
@@ -2933,6 +2957,7 @@ function renderSat(view: HTMLElement, tabs: string): void {
       <div class="ctlrow"><button id="sat-track" class="act grow">LISTEN · TRACK DOPPLER</button><button id="sat-refresh" class="tog">TLE ↻</button></div>
       <div id="sat-status" class="note">${s.status}</div>
       <button id="sat-ptt" class="chip ptt" hidden>PUSH TO TALK · UPLINK</button>
+      <div id="sat-rxonly" class="rxonly" hidden><b>RTL-SDR RECEIVES ONLY</b><span>Transmitting needs a HackRF. Everything that listens works on this radio.</span></div>
       <div id="tx-status" class="health"></div>
       <div id="sat-now" class="panel about"></div>
       <div id="sat-map" class="panel map"></div>
@@ -3328,7 +3353,7 @@ function onSameAlert(m: { event: string; header?: { eventName: string; originato
 
 // ---- RDS: station name / RadioText ticker over the audio waterfall, decoded from the WFM composite in the worker.
 let rdsWanted = true;
-let lastRds: { ps: string; rt: string; ptyName: string; pi: number | null; synced: boolean } | null = null;
+let lastRds: { ps: string; rt: string; ptyName: string; pi: number | null; tp?: boolean; synced: boolean } | null = null;
 function sendRds(): void { worker?.postMessage({ type: 'rds', on: rdsWanted }); }
 /** The running marquee (when the line is too long to sit still) and the last content shown, so an unchanged
  *  update leaves a scrolling line alone instead of yanking it back to the start every frame RDS repeats. */
@@ -3358,30 +3383,34 @@ function drawRds(): void {
   const r = lastRds;
   const pty = r.ptyName && r.ptyName !== 'None' ? r.ptyName : '';
   const pi = r.pi != null ? r.pi.toString(16).toUpperCase().padStart(4, '0') : '';
-  // Everything RDS gave us, station identity first and RadioText (the long one) last.
-  const fields: [string, string][] = [];
-  if (r.ps.trim()) fields.push(['', r.ps.trim()]);
-  if (pty) fields.push(['', pty]);
-  if (pi) fields.push(['PI', pi]);
-  if (r.rt.trim()) fields.push(['', r.rt.trim()]);
-  const key = fields.map(f => f.join(':')).join('|') + (r.synced ? '#s' : '#-');
+  // The station's name, its pills (lock, program type, traffic, PI), then RadioText (the long one) last.
+  const ps = r.ps.trim(), rt = r.rt.trim();
+  const pills = [`<span class="rp${r.synced ? ' ok' : ''}">${r.synced ? 'LOCKED' : 'LISTENING'}</span>`];
+  if (pty) pills.push(`<span class="rp">${esc(pty.toUpperCase())}</span>`);
+  if (r.tp) pills.push('<span class="rp hot">TP</span>');
+  if (pi) pills.push(`<span class="rp">PI ${pi}</span>`);
+  const text = rt ? `<b>${esc(rt)}</b>` : `<span class="rq">${r.synced ? 'no radiotext from this station' : 'reading the station\'s data…'}</span>`;
+  const pillHtml = pills.join('');
+  const key = ps + '|' + pillHtml + '|' + text;
   if (key === rdsShownKey) return;                 // nothing changed: let any running marquee carry on
   rdsShownKey = key;
-  const body = fields.length
-    ? fields.map(([k, v]) => `${k ? `<i>${esc(k)}</i>` : ''}<b>${esc(v)}</b>`).join('<em>·</em>')
-    : `<b>${r.synced ? 'RDS · reading…' : 'RDS · listening…'}</b>`;
+  // the native strip's layout: the name large on the left, the pills over the text line beside it; only the text scrolls
+  if (!el.querySelector('.rdsclip')) { el.innerHTML = '<b class="ps"></b><span class="rdscol"><span class="rdspills"></span><span class="rdsclip"><span class="rdsline"></span></span></span>'; rdsAnim?.cancel(); rdsAnim = null; }
+  const psEl = el.querySelector<HTMLElement>('.ps')!; psEl.textContent = ps || 'RDS'; psEl.classList.toggle('none', !ps);
+  el.querySelector<HTMLElement>('.rdspills')!.innerHTML = pillHtml;
+  const clip = el.querySelector<HTMLElement>('.rdsclip')!;
+  const body = text;
   // Reuse the one line node and just replace its text: the name is dynamic and changes about once a second, and
   // recreating the node each time restarted the marquee from the right edge, so it never scrolled past its first
   // second — the whole message barely moved and the start of it looked like it was scrolling in a little box.
   // Keeping the node alive lets the marquee run continuously across every name change; there are no fixed field
   // widths, so each field is as wide as its text and the whole line scrolls as one when it overflows the bar.
-  let line = el.querySelector('.rdsline') as HTMLElement | null;
-  if (!line) { el.innerHTML = '<span class="rdsline"></span>'; line = el.firstElementChild as HTMLElement; rdsAnim?.cancel(); rdsAnim = null; }
+  const line = el.querySelector('.rdsline') as HTMLElement;
   line.innerHTML = body;
   const node = line;
   requestAnimationFrame(() => {
     if (!node.isConnected || el.hidden) return;
-    const cw = el.clientWidth, lw = node.scrollWidth;
+    const cw = clip.clientWidth, lw = node.scrollWidth;
     if (lw <= cw) { el.classList.remove('ticker'); rdsAnim?.cancel(); rdsAnim = null; return; }   // fits: static, every field visible at once
     el.classList.add('ticker');
     // Start the marquee once and let it keep running as the text updates. Rebuild it only when the width really
@@ -3935,7 +3964,6 @@ function renderPacket(view: HTMLElement, app: AppId): void {
   switch (app) {
     case 'pager': controls = `<div class="row">${(['flex', 'pocsag', 'both'] as const).map(w => `<button class="chip" data-pager="${w}">${w === 'both' ? 'FLEX + POCSAG' : w.toUpperCase()}</button>`).join('')}</div>` + presetHtml('CHANNEL · MHz', [['929.6125', 929_612_500], ['929.6625', 929_662_500], ['931.9375', 931_937_500], ['466.175', 466_175_000]]) + stepHtml([1e5, 12_500, 2_500]); break;
     case 'acars': controls = presetHtml('CHANNEL · MHz', [['131.550 US', 131_550_000], ['131.525 EU', 131_525_000], ['131.725 EU2', 131_725_000], ['131.450 JP', 131_450_000], ['130.025', 130_025_000]]) + `<div class="note">Registration, flight, label and text from each message, CRC checked.</div>`; break;
-    case 'subghz': controls = presetHtml('BAND · MHz', [['433.92', 433_920_000], ['315.00', 315_000_000], ['868.35', 868_350_000], ['915.00', 915_000_000], ['303.875', 303_875_000]]) + `<div class="row">${(['weather', 'remotes', 'cars'] as const).map(f => `<button class="chip" data-ism="${f}">${f === 'weather' ? `WEATHER ${ISM_COUNTS.weather}` : f === 'remotes' ? `REMOTES ${ISM_COUNTS.remotes}` : `CAR KEYS ${ISM_COUNTS.cars}`}</button>`).join('')}</div>`; break;
     case 'btle': controls = `<div class="row">${[37, 38, 39].map(ch => `<button class="chip" data-btle="${ch}">CH ${ch} · ${btleChannelFreq(ch) / 1e6}</button>`).join('')}</div>`; break;
   }
   // A radio that cannot reach this app's band says so right on the screen, not just in a passing status line.
@@ -3945,7 +3973,6 @@ function renderPacket(view: HTMLElement, app: AppId): void {
     <section class="visual">${readoutHtml()}<div id="scope" class="panel short"></div></section>
     <section class="controls">${controls}${logHtml(app, why ? 'out of range for this radio' : 'listening…')}</section>`;
   scope = attach(app === 'btle' ? new Scope($('scope'), 0, { rows: 80, spectrumHeight: 70 }) : tunableScope('scope', 80, 70));
-  qa<HTMLButtonElement>('[data-ism]', view).forEach(b => { const f = b.dataset.ism as keyof typeof state.ism; b.classList.toggle('on', state.ism[f]); b.onclick = () => { state.ism[f] = !state.ism[f]; b.classList.toggle('on', state.ism[f]); worker?.postMessage({ type: 'ismFamilies', ...state.ism }); }; });
   qa<HTMLButtonElement>('[data-pager]', view).forEach(b => { b.classList.toggle('on', b.dataset.pager === state.pager); b.onclick = () => { state.pager = b.dataset.pager as typeof state.pager; worker?.postMessage({ type: 'pager', which: state.pager }); qa('[data-pager]').forEach(x => x.classList.toggle('on', x === b)); }; });
   qa<HTMLButtonElement>('[data-btle]', view).forEach(b => b.onclick = () => { state.btleCh = Number(b.dataset.btle); worker?.postMessage({ type: 'btleChannel', ch: state.btleCh }); tune(btleChannelFreq(state.btleCh)); refreshBtle(); });
   refreshList(app); refreshAis(); refreshBtle();
@@ -4445,7 +4472,7 @@ function refreshMeters(force = false): void {
 
 // ---- Trains: end-of-train telemetry and the PTC train-control network (receive only) ----------------------------
 interface TrainsSnap { band: 'EOT' | 'PTC'; hears: string[]; units: EotUnit[]; hots: HotHeard[]; stations: PtcStation[]; activity: Record<string, number>; other: number }
-const trainsUi = { snap: null as TrainsSnap | null, view: 'units' as 'units' | 'ptc' | 'hot', band: 'PTC' as 'EOT' | 'PTC', auto: true, timer: 0, cycle: 0, drawn: 0, pending: 0, picked: false, sel: '' };
+const trainsUi = { snap: null as TrainsSnap | null, view: 'units' as 'units' | 'ptc' | 'hot', band: 'PTC' as 'EOT' | 'PTC', auto: true, timer: 0, cycle: 0, drawn: 0, pending: 0, picked: false, sel: '', full: false };
 /** Tunes for the band: as wide as it needs where the radio can (both EOT channels, or all of 216-222.5 MHz), else the
  *  channels heard most, from 2 MHz. */
 /** What the PTC tuning hears, in MHz: a HackRF all of PTC, an RTL-SDR about 2 MHz of it. */
@@ -4534,7 +4561,7 @@ function renderTrains(view: HTMLElement): void {
       <div class="ctlrow"><div id="tr-lamps" class="tr-lamps"></div></div>
       <div id="tr-banner" class="tr-banner"></div>
       <div id="tr-strip" class="tr-strip"></div>
-      <div class="ctlrow">${segHtml(['units', 'ptc', 'hot'].map(v => `<button data-trview="${v}"></button>`))}${pauseClearHtml('trains')}</div>
+      <div class="ctlrow">${segHtml(['units', 'ptc', 'hot'].map(v => `<button data-trview="${v}"></button>`))}<button id="tr-full" class="ib" title="full screen" aria-label="full screen">${trainsUi.full ? EXIT_SVG : FULL_SVG}</button>${pauseClearHtml('trains')}</div>
       <div class="tr-stage"><div id="tr-cards" class="mt-cards tr-cards"></div><div id="tr-detail" class="mt-detail" hidden></div></div>
       <div id="tr-log">${logHtml('trains', 'listening for trains…')}</div>
       <div class="note about">The railroad's radios, receive only. EOT · HOT decodes the end-of-train units (brake pipe pressure, motion, marker light, battery) and spots the head unit's commands to them; PTC 220 watches the train-control network: base stations, wayside units (and when their status changes) and locomotives. BOTH takes turns. 457.9375 EOT · 452.9375 HOT · 457.925 DPU · 217–222 MHz PTC. A HackRF hears both EOT channels or all of PTC at once. Tap a card for everything decoded from it.</div>
@@ -4544,6 +4571,8 @@ function renderTrains(view: HTMLElement): void {
   qa<HTMLButtonElement>('[data-trview]', view).forEach(b => b.onclick = () => { trainsUi.view = b.dataset.trview as typeof trainsUi.view; trainsUi.picked = true; trainsUi.sel = ''; refreshTrains(true); });
   $('tr-cards').onclick = (e) => { const c = (e.target as HTMLElement).closest<HTMLElement>('[data-trsel]'); if (c) { trainsUi.sel = trainsUi.sel === c.dataset.trsel ? '' : c.dataset.trsel!; refreshTrains(true); } };
   $('tr-detail').onclick = (e) => { const b = (e.target as HTMLElement).closest<HTMLElement>('[data-trdo]'); if (!b) return; if (b.dataset.trdo === 'close') { trainsUi.sel = ''; refreshTrains(true); } };
+  $('tr-full').onclick = () => setTrainsFull(!trainsUi.full);
+  view.classList.toggle('trainsfull', trainsUi.full);
   clearInterval(trainsUi.timer);
   // the cards run their ages, countdowns and timelines on between reports
   trainsUi.timer = window.setInterval(() => { if (state.app !== 'trains') { clearInterval(trainsUi.timer); return; } refreshTrains(); }, 250);
@@ -4660,6 +4689,14 @@ const TRAIN_SCENE = '<svg class="tr-scene" viewBox="0 0 92 40"><line class="rail
   + '</g><rect class="body" x="5.5" y="11.2" width="57" height="16.8" rx="3"/><rect x="41" y="2.4" width="17" height="8.8" rx="2"/><path d="M62.5 14.6 L71.7 20.4 L71.7 28 L62.5 28"/>'
   + '<circle class="lamp" cx="71.7" cy="21.6" r="2.4"/><path class="beam" d="M71.7 21.6 L92 10.4 L92 30.4 Z"/>'
   + '<g class="w"><circle cx="16" cy="32" r="4.8"/><circle cx="34.3" cy="32" r="4.8"/><circle cx="52.6" cy="32" r="4.8"/></g></svg>';
+/** Trains full screen: the cards (or the open card) over everything, with the view switch, as the other apps do. */
+function setTrainsFull(on: boolean): void {
+  trainsUi.full = on;
+  const v = q('.view.trains'); if (!v) return;
+  v.classList.toggle('trainsfull', on);
+  const b = q('#tr-full'); if (b) { b.innerHTML = on ? EXIT_SVG : FULL_SVG; b.title = on ? 'leave full screen' : 'full screen'; }
+  refreshTrains(true);
+}
 function refreshTrains(force = false): void {
   if (state.app !== 'trains') return;
   const now = Date.now();
@@ -5416,7 +5453,7 @@ function renderFleet(view: HTMLElement): void {
       ${wide ? '' : `<nav class="fl-jump">${tabs.map(v => `<button data-flview="${v}"><span>${tabName(v)}</span><b></b></button>`).join('')}</nav>`}<div class="ctlrow fl-tabs">${wide ? segHtml(tabs.map(v => `<button data-flview="${v}">${tabName(v)}</button>`)) : ''}${wide ? '' : `<button id="fl-full" class="ib" title="full screen" aria-label="full screen">${fleetUi.full ? EXIT_SVG : FULL_SVG}</button>`}<button id="fl-export" class="ib" title="export the log (CSV) and the tables (JSON)" aria-label="export"><svg viewBox="0 0 24 24"><path d="M5 20h14v-2H5v2zm7-18-5.5 5.5 1.4 1.4L11 5.8V16h2V5.8l3.1 3.1 1.4-1.4L12 2z"/></svg></button>${pauseClearHtml('fleet')}</div>
       <div id="fl-stage" class="mt-stage fl-stage"><div id="fl-detail" class="mt-detail" hidden></div>${wide ? '' : `<div class="fl-sech" data-flsec="map">MAP</div><div class="fl-mapwrap">${mapHtml}</div>`}${wide ? '' : '<div class="fl-sech" data-flsec="tgs">TALKGROUPS</div>'}<div id="fl-tgs" class="fl-tgs"></div>${wide ? '' : '<div class="fl-sech" data-flsec="systems">SYSTEMS</div>'}<div id="fl-cards" class="fl-cards"></div>${wide ? '' : '<div class="fl-sech" data-flsec="calls">CALLS</div>'}<div id="fl-calls" class="fl-calls"></div>${wide ? '' : '<div class="fl-sech" data-flsec="grants">GRANTS</div>'}<div id="fl-grants" class="fl-grants"></div>${wide ? '' : '<div class="fl-sech" data-flsec="freqs">FREQUENCIES</div>'}<div id="fl-freqs" class="fl-freqs"></div></div>
       <div id="fl-log"><div class="countrow"><span id="count-fleet" class="count">0 DECODED</span></div>${listHtml('fleet', 'watching for control channels…')}</div>
-      <div class="note about">Trunked radio systems and their calls, receive only, for P25 Phase 1 (C4FM and CQPSK simulcast), P25 Phase 2, DMR, NXDN and TETRA. Every carrier in the span is found and the live ones decoded at once, and systems are named by what they send (WACN, system, RFSS, site, NAC; the DMR color code and network; the NXDN system and site; the TETRA network and cell; the CW ID callsign). Grants resolve to MHz through the channel tables on the air, and Phase 2 voice channels are marked TDMA. Each call granted jumps to the top while it is on the air, and its voice channel is followed when it is inside the span, with P25 voice frames and terminators and DMR voice bursts and their link control (talkgroup, unit, emergency, privacy). Encrypted means the call itself says so. Clear calls play through the app\'s own vocoders, and the last calls replay from memory; a receiver that cannot cover the call's channel goes to it and comes back. P25 Phase 2 TDMA calls play too, each timeslot its own call. The channel is descrambled with the system's WACN, system and NAC, and its MAC messages name the talkgroup, the unit and the encryption and end the call. The first call to bring audio is heard until it ends, and a priority talkgroup (then an emergency) takes over; calls fade in and out. ALL hears every system; LOCK stays on one system or site, from its card or a call, and keeps AUTO from moving on. Encryption is shown as the air states it, with the P25 algorithm and key from the encryption sync or the call header, the DMR privacy bit and header, the NXDN cipher type and the TETRA encryption flags; an encrypted call never plays. DMR logical channels are placed on their carriers by matching each grant to the voice that follows it. A call shows where its unit, or a unit in its talkgroup, last reported from, with the distance and direction from you; tap it to see it on the map. Mute, follow and priority are per talkgroup; a tap on a talkgroup tile follows it, so only it is heard, and ALL hears every talkgroup again. DMR unit positions are resolved against your own position (within about 300 km). AUTO steps through the bands until it hears clear voice, then stays on that band and looks at the others only now and then, when nothing clear is playing. Calls with no talkgroup and no audio fold into one line under the stack, like the encrypted ones. NXDN48 and NXDN96 are read on control, traffic and conventional channels. A Type-C control channel names its system and site, its grants are followed to their traffic channels, and each call's VCALL names the talkgroup or unit and says whether it is ciphered (scramble, DES or AES are encrypted and never play); conventional channels are their own systems by RAN, and Type-D repeaters by their site. NXDN carries no channel plan on the air, so channel numbers become frequencies as they are heard, from the control channel's own number and each grant matched to the voice that follows it. Clear NXDN voice plays through the same AMBE+2 vocoder as DMR, and the 9600 bps full-rate mode through the P25 one. TETRA (EN 300 392-2) is read from the cell's synchronization and broadcast bursts on, giving the network (MCC, MNC), the cell (location area, color code, main carrier) and what it offers, call set-up and transmission grants (group, unit, the carrier and timeslot of the call), releases, registrations and SDS text and status messages. TETRA speech is followed onto its timeslot and carrier and played through the app's own TETRA ACELP decoder, written from EN 300 395-2 and checked against the standard's test sequences. A TETRA call set up end-to-end encrypted is marked encrypted and never plays; a cell that encrypts its air interface (TEA) says so on its card, and its traffic is marked encrypted, not decoded. Tap anything for all it carried.</div>
+      <div class="note about">Trunked radio systems and their calls, receive only, for P25 Phase 1 (C4FM and CQPSK simulcast), P25 Phase 2, DMR, NXDN, TETRA and Motorola Type II (SmartNet, SmartZone). Every carrier in the span is found and the live ones decoded at once, and systems are named by what they send (WACN, system, RFSS, site, NAC; the DMR color code and network; the NXDN system and site; the TETRA network and cell; the CW ID callsign). Grants resolve to MHz through the channel tables on the air, and Phase 2 voice channels are marked TDMA. Each call granted jumps to the top while it is on the air, and its voice channel is followed when it is inside the span, with P25 voice frames and terminators and DMR voice bursts and their link control (talkgroup, unit, emergency, privacy). Encrypted means the call itself says so. Clear calls play through the app\'s own vocoders, and the last calls replay from memory; a receiver that cannot cover the call's channel goes to it and comes back. P25 Phase 2 TDMA calls play too, each timeslot its own call. The channel is descrambled with the system's WACN, system and NAC, and its MAC messages name the talkgroup, the unit and the encryption and end the call. The first call to bring audio is heard until it ends, and a priority talkgroup (then an emergency) takes over; calls fade in and out. ALL hears every system; LOCK stays on one system or site, from its card or a call, and keeps AUTO from moving on. Encryption is shown as the air states it, with the P25 algorithm and key from the encryption sync or the call header, the DMR privacy bit and header, the NXDN cipher type and the TETRA encryption flags; an encrypted call never plays. DMR logical channels are placed on their carriers by matching each grant to the voice that follows it. A call shows where its unit, or a unit in its talkgroup, last reported from, with the distance and direction from you; tap it to see it on the map. Mute, follow and priority are per talkgroup; a tap on a talkgroup tile follows it, so only it is heard, and ALL hears every talkgroup again. DMR unit positions are resolved against your own position (within about 300 km). AUTO steps through the bands until it hears clear voice, then stays on that band and looks at the others only now and then, when nothing clear is playing. Calls with no talkgroup and no audio fold into one line under the stack, like the encrypted ones. NXDN48 and NXDN96 are read on control, traffic and conventional channels. A Type-C control channel names its system and site, its grants are followed to their traffic channels, and each call's VCALL names the talkgroup or unit and says whether it is ciphered (scramble, DES or AES are encrypted and never play); conventional channels are their own systems by RAN, and Type-D repeaters by their site. A Motorola Type II control channel names its system and its own channel, each grant names the unit and talkgroup and is followed to its voice channel, and that voice is analog FM. NXDN carries no channel plan on the air, so channel numbers become frequencies as they are heard, from the control channel's own number and each grant matched to the voice that follows it. Clear NXDN voice plays through the same AMBE+2 vocoder as DMR, and the 9600 bps full-rate mode through the P25 one. TETRA (EN 300 392-2) is read from the cell's synchronization and broadcast bursts on, giving the network (MCC, MNC), the cell (location area, color code, main carrier) and what it offers, call set-up and transmission grants (group, unit, the carrier and timeslot of the call), releases, registrations and SDS text and status messages. TETRA speech is followed onto its timeslot and carrier and played through the app's own TETRA ACELP decoder, written from EN 300 395-2 and checked against the standard's test sequences. A TETRA call set up end-to-end encrypted is marked encrypted and never plays; a cell that encrypts its air interface (TEA) says so on its card, and its traffic is marked encrypted, not decoded. Tap anything for all it carried.</div>
     </section>`;
   if (wide) fleetWideGrid();
   scope = attach(tunableScope('scope', 80, 70));
@@ -6697,7 +6734,14 @@ const cellMhz = (hz: number) => (hz / 1e6).toFixed(1);
 const cellAgo = (ms: number) => ms < 2_000 ? 'now' : ms < 60_000 ? `${Math.floor(ms / 1000)} s ago` : ms < 3_600_000 ? `${Math.floor(ms / 60_000)} min ago` : ms < 172_800_000 ? `${Math.floor(ms / 3_600_000)} h ago` : `${Math.floor(ms / 86_400_000)} d ago`;
 const cellTime = (ms: number) => { const d = new Date(ms); return `${d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })} ${d.toTimeString().slice(0, 8)}`; };
 const CELL_RANK_COLOR = ['#8d97ab', '#4c8dff', '#ffaf00', '#ff7a45', '#ff4d4d', '#ff2a6a'];
-const cellBands = () => cellUi.band === 'AUTO' ? CELL_BANDS : CELL_BANDS.filter(b => b.id === cellUi.band);
+/** Whether the radio reaches the whole band (with no radio yet, every band counts). */
+const cellCanTune = (b: { lo: number; hi: number }) => !radio || (b.lo >= radio.limits.minHz && b.hi <= radio.limits.maxHz);
+/** AUTO sweeps only the bands this radio can tune (all of them if it reaches none), as the native apps do. */
+const cellBands = () => {
+  if (cellUi.band !== 'AUTO') return CELL_BANDS.filter(b => b.id === cellUi.band);
+  const can = CELL_BANDS.filter(cellCanTune);
+  return can.length ? can : CELL_BANDS;
+};
 const cellBandAt = (hz: number) => CELL_BANDS.find(b => hz >= b.lo - 2e6 && hz <= b.hi + 2e6) ?? null;
 /** What the connected radio can and cannot do here, said plainly. */
 function cellCapability(): [string, 'ok' | 'amber' | ''] {
@@ -7007,7 +7051,12 @@ function refreshCell(force = false): void {
   const s = cellUi.snap, view = cellUi.view, wide = CELL_WIDE.matches;
   const put = (el: HTMLElement | null, key: string, html: string) => { if (!el || cellUi.html.get(key) === html) return; const top = el.scrollTop; el.innerHTML = html; el.scrollTop = top; cellUi.html.set(key, html); };
   put(q('#cl-head'), 'head', cellHead(s, now));
-  qa<HTMLButtonElement>('[data-clband]').forEach(b => b.classList.toggle('on', b.dataset.clband === cellUi.band));
+  qa<HTMLButtonElement>('[data-clband]').forEach(b => {
+    b.classList.toggle('on', b.dataset.clband === cellUi.band);
+    // a band outside this radio's range is grayed out and cannot be picked
+    const band = CELL_BANDS.find(x => x.id === b.dataset.clband), can = !band || cellCanTune(band);
+    b.disabled = !can; b.title = can ? '' : `outside this radio's ${radio ? `${(radio.limits.minHz / 1e6).toFixed(0)}–${(radio.limits.maxHz / 1e6).toFixed(0)} MHz` : 'range'}`;
+  });
   const nAlerts = s ? groupAlerts(s.alerts).length : 0, nb = s ? s.cells.filter(c => c.neighbors && (c.neighbors.intra.length || c.neighbors.inter.length || c.neighbors.nr.length)).length : 0;
   qa<HTMLButtonElement>('[data-clview]').forEach(b => {
     const v = b.dataset.clview as CellView; b.classList.toggle('on', v === view);
@@ -8712,12 +8761,27 @@ function showTxSafetyPrompt(): void {
   document.body.appendChild(el);
   const close = () => el.remove();
   $('tx-ack').onclick = () => { tx.acknowledgeSafety(); close(); };
-  $('tx-cancel').onclick = () => { close(); open(homeApp()); };
+  $('tx-cancel').onclick = () => { close(); open(null); };
 }
 
-/** The transmit modes, each with what it sends (the Android app's tiles). */
-const TX_MODES: [string, string][] = [['Signal', 'test carrier'], ['Tones', 'DTMF'], ['POCSAG', 'pager'], ['RTTY', '45 baud'], ['APRS', 'AX.25'], ['Morse', 'CW'], ['OOK', 'PT2262'],
-  ['MDC', 'PTT-ID'], ['QC-II', 'two-tone'], ['SubGHz', 'Flipper .sub'], ['KeeLoq', 'HCS301'], ['Noise', 'OOK noise'], ['Brute', 'PT2262'], ['Hopper', 'hop list'], ['ADS-B', 'DF17']];
+/** The transmit modes in the Android app's tile order, each with what it sends and the panel it opens (renderTx). */
+const TX_REPLAY = 15;
+let txReplayRedraw: (() => void) | null = null;
+const TX_MODES: [string, string, number][] = [['Signal', 'test carrier', 0], ['Tones', 'DTMF', 1], ['POCSAG', 'pager', 2], ['RTTY', '45 baud', 3], ['APRS', 'AX.25', 4], ['Morse', 'CW', 5], ['OOK', 'PT2262', 6],
+  ['Replay', 'IQ capture', TX_REPLAY], ['MDC', 'PTT-ID', 7], ['QC-II', 'two-tone', 8], ['SubGHz', 'Flipper .sub', 9], ['KeeLoq', 'HCS301', 10], ['Noise', 'OOK noise', 11], ['Brute', 'PT2262', 12], ['Hopper', 'hop list', 13], ['ADS-B', 'DF17', 14]];
+/** A capture from the Capture app, read from this browser's storage with the frequency and rate its sidecar gives. */
+async function replayCapture(name: string): Promise<void> {
+  try {
+    const dir = await (await navigator.storage.getDirectory()).getDirectoryHandle('captures');
+    const iq = new Int8Array(await (await (await dir.getFileHandle(name)).getFile()).arrayBuffer());
+    let txt = '';
+    try { txt = await (await (await dir.getFileHandle(name.replace(/\.c8$/, '.txt'))).getFile()).text(); } catch { /* no sidecar */ }
+    const num = (k: string) => Number(new RegExp(`^${k}=(\\d+(?:\\.\\d+)?)`, 'm').exec(txt)?.[1] ?? NaN);
+    const hz = num('center_frequency'), rate = num('sample_rate');
+    if (!(hz > 0) || !(rate > 0)) { txStatus(`${name}: its .txt sidecar gives no frequency and rate to replay on`); return; }
+    tx.replay(name, iq, hz, rate);
+  } catch (e) { txStatus(`${name}: ${(e as Error).message}`); }
+}
 /** TX gain as one bar, IF 0–47 dB, with the +14 dB amp beside it. */
 const txGainHtml = () => `<div class="ctlrow"><span class="rl">GAIN</span>${segHtml([0, 10, 20, 30, 47].map(g => `<button data-txg="${g}">${g}</button>`))}<button id="tx-amp" class="tog" title="the amp adds +14 dB">AMP</button></div>`;
 function renderTx(view: HTMLElement): void {
@@ -8733,7 +8797,7 @@ function renderTx(view: HTMLElement): void {
     <section class="controls">
       ${stepHtml([1e6, 1e5, 1e4])}
       ${txGainHtml()}
-      <div class="tgrid">${TX_MODES.map(([t, sub], i) => `<button class="tl" data-txtab="${i}"><b>${t.toUpperCase()}</b><small>${sub}</small></button>`).join('')}</div>
+      <div class="tgrid">${TX_MODES.map(([t, sub, i]) => `<button class="tl" data-txtab="${i}"><b>${t.toUpperCase()}</b><small>${sub}</small></button>`).join('')}</div>
       <div id="tx-body"></div>
       <div class="health" id="tx-status" style="margin-top:8px">idle</div>
       <button id="tx-stop" class="chip rec" style="margin-top:8px" hidden>■ STOP</button>
@@ -8823,6 +8887,13 @@ function renderTx(view: HTMLElement): void {
         const d = parseInt(($('h-dwell') as HTMLInputElement).value || '20', 10);
         tx.frequencyHopper(Apps.hopList(lo, hi, n), d);
       };
+    } else if (tab === TX_REPLAY) {
+      // the Capture app's recordings, each sent back on the frequency and at the rate it was recorded
+      const files = state.captures;
+      body.innerHTML = files.length
+        ? `<div class="tx-replay">${files.map(f => `<button class="chip" data-replay="${esc(f.name)}">▶&nbsp; ${esc(f.name)}</button>`).join('')}</div>`
+        : '<div class="caption">No captures. Record raw IQ in the Capture app first; its sidecar carries the frequency to replay on.</div>';
+      qa<HTMLButtonElement>('[data-replay]', body).forEach(b => b.onclick = () => { if (!tx.active) void replayCapture(b.dataset.replay!); });
     } else {
       body.innerHTML = `<input id="a-icao" class="txin" value="A19E43" maxlength="6"><input id="a-me" class="txin" value="58C382C82F4D4A" maxlength="14" style="margin-top:6px"><div class="caption">Mode-S DF17 Extended Squitter · ICAO 24-bit hex + ME 56-bit hex · dummy load only, real airspace is illegal</div><button class="chip primary" id="a-send" style="margin-top:6px;width:100%">▶ SQUITTER</button>`;
       $('a-send').onclick = () => {
@@ -8835,6 +8906,9 @@ function renderTx(view: HTMLElement): void {
     }
   };
   qa<HTMLButtonElement>('[data-txtab]', view).forEach(b => b.onclick = () => { tab = Number(b.dataset.txtab); drawTab(); });
+  // the capture list arrives from the worker: Replay redraws with it
+  txReplayRedraw = () => { if (tab === TX_REPLAY && body.isConnected) drawTab(); };
+  ensureWorker().postMessage({ type: 'capture', cmd: 'list' });
   drawTab();
   txStatus(tx.active ? 'transmitting' : 'idle');
   if (txHandoff && tab === 9) {
@@ -8884,20 +8958,138 @@ function thisAppRows(app: AppId | null): string {
     default: return '';
   }
 }
+/**
+ * The radio card at the top of Settings (the native RadioCard): the radio, and live while it runs what it is tuned
+ * to, its rate and gain, and badges for HF READY, BIAS-T ON, AMP +14 and MUTED. An RTL-SDR shows its tuner.
+ */
+function radioCardHtml(line: string): string {
+  const rtl = radio?.kind === 'rtlsdr', tuner = rtl ? (radio as RtlSdr).tuner : '';
+  const head = `<div class="rc-head"><i class="rc-dot"></i><b>${radio ? esc(radio.label.toUpperCase()) : 'NO RADIO'}</b>${tuner ? `<span class="rc-badge">${esc(tuner)}</span>` : ''}</div>`;
+  if (!radio) return head + `<small>${esc(line)}</small>`;
+  const gain = state.agc ? 'AGC' : rtl ? `${rtlGainDb()} dB` : `${state.lna}/${state.vga} dB`;
+  const stats = [['TUNED', (tunedHz() / 1e6).toFixed(3)], ['RATE', `${(radio.targetRateHz / 1e6).toFixed(2)} Msps`], ['GAIN', gain]]
+    .map(([k, v]) => `<span class="rc-stat"><small>${k}</small><b>${v}</b></span>`).join('');
+  const badges = [rtl && radio.limits.minHz < 24_000_000 ? 'HF READY' : '', state.biast ? 'BIAS-T ON' : '', !rtl && state.amp ? 'AMP +14' : '', state.muted ? 'MUTED' : '']
+    .filter(Boolean).map(b => `<span class="rc-badge hot">${b}</span>`).join('');
+  return head + `<div class="rc-stats">${stats}</div>${badges ? `<div class="rc-badges">${badges}</div>` : ''}<small>${esc(line)}</small>`;
+}
+let radioCardTimer = 0;
+
+// ---- Settings, LOOK, WATERFALL: the color map every waterfall draws with -----------------------------------------
+const WF_PAL_KEY = 'mm.wf.palette';
+let wfPalette: WfPalette = (() => { try { const v = localStorage.getItem(WF_PAL_KEY); return isWfPalette(v) ? v : 'INFERNO'; } catch { return 'INFERNO'; } })();
+/** Set the waterfalls' color map from the palette and the skin (Skin follows the theme, so a new skin redoes it). */
+function applyWfPalette(): void { const s = currentSkin(); setWaterfallLut(wfLut(wfPalette, s.paper, s.accent, s.accent2)); }
+function setWfPalette(p: WfPalette): void {
+  wfPalette = p; applyWfPalette();
+  try { localStorage.setItem(WF_PAL_KEY, p); } catch { /* storage blocked */ }
+}
+/** A palette's colors as a CSS gradient, for its swatch in Settings. */
+function wfGradient(p: WfPalette): string {
+  const s = currentSkin(), lut = wfLut(p, s.paper, s.accent, s.accent2);
+  const stops = Array.from({ length: 17 }, (_, i) => { const k = Math.min(255, i * 16) * 4; return `rgb(${lut[k]},${lut[k + 1]},${lut[k + 2]}) ${(i / 16 * 100).toFixed(1)}%`; });
+  return `linear-gradient(90deg,${stops.join(',')})`;
+}
+
+// ---- Settings, BAR: tick the apps the bottom bar holds and drag them into order ------------------------------------
+function barChecklistHtml(): string {
+  return barPrefs.order.map(id => {
+    const a = APPS.find(x => x.id === id); if (!a) return '';
+    const on = barPrefs.checked.has(id);
+    return `<div class="barrow ${on ? 'on' : ''}" data-barapp="${id}" style="--seg:${tint(a.cat)}"><button class="barck" data-bartick="${id}" role="checkbox" aria-checked="${on}" aria-label="${esc(a.title)} in the bar">${on ? '✓' : ''}</button><span class="barname" data-bartick="${id}"><b>${esc(a.title.toUpperCase())}</b><small>${esc(a.blurb)}</small></span><span class="barhandle" data-bardrag="${id}" tabindex="0" role="button" aria-label="move ${esc(a.title)}, arrow keys move it">≡</span></div>`;
+  }).join('');
+}
+/** A tick or a move: saved, the bar rebuilt, the list redrawn. */
+function barChanged(focus?: string): void {
+  saveBarPrefs(); buildBar();
+  const l = q('#barlist'); if (l) l.innerHTML = barChecklistHtml();
+  if (focus) q<HTMLElement>(`[data-bardrag="${focus}"]`)?.focus();
+}
+/** The nearest ancestor that scrolls, for the drag's auto-scroll at the edges. */
+function scrollParent(el: HTMLElement): HTMLElement {
+  for (let p = el.parentElement; p; p = p.parentElement) { const o = getComputedStyle(p).overflowY; if ((o === 'auto' || o === 'scroll') && p.scrollHeight > p.clientHeight) return p; }
+  return document.scrollingElement as HTMLElement ?? document.documentElement;
+}
+function bindBarList(list: HTMLElement): void {
+  list.onclick = (e) => { const t = (e.target as HTMLElement).closest<HTMLElement>('[data-bartick]'); if (!t) return; toggleBar(barPrefs, t.dataset.bartick!); barChanged(); };
+  // the handle moves its app with the arrow keys too
+  list.onkeydown = (e) => {
+    const h = (e.target as HTMLElement).closest<HTMLElement>('[data-bardrag]'); if (!h || (e.key !== 'ArrowUp' && e.key !== 'ArrowDown')) return;
+    e.preventDefault();
+    const id = h.dataset.bardrag!, i = barPrefs.order.indexOf(id);
+    moveBar(barPrefs, i, i + (e.key === 'ArrowUp' ? -1 : 1)); barChanged(id);
+  };
+  list.onpointerdown = (e) => {
+    const h = (e.target as HTMLElement).closest<HTMLElement>('[data-bardrag]'); if (!h || e.button !== 0) return;
+    e.preventDefault();
+    const rows = qa<HTMLElement>('.barrow', list), row = h.closest<HTMLElement>('.barrow')!, from = rows.indexOf(row);
+    const slot = rows.length > 1 ? rows[1].offsetTop - rows[0].offsetTop : row.offsetHeight;
+    const sc = scrollParent(list), st0 = sc.scrollTop, y0 = e.clientY;
+    let y = e.clientY, to = from, raf = 0;
+    h.setPointerCapture(e.pointerId);
+    row.classList.add('drag');
+    const place = () => {
+      const dy = y - y0 + sc.scrollTop - st0;
+      to = Math.max(0, Math.min(rows.length - 1, from + Math.round(dy / slot)));
+      row.style.transform = `translateY(${dy}px)`;
+      rows.forEach((r, i) => { if (r !== row) r.style.transform = from < to && i > from && i <= to ? `translateY(${-slot}px)` : from > to && i < from && i >= to ? `translateY(${slot}px)` : ''; });
+    };
+    // held near the top or bottom of the page, the page scrolls under the row
+    const tick = () => {
+      const b = sc.getBoundingClientRect(), top = Math.max(0, b.top), bot = Math.min(innerHeight, b.bottom);
+      const step = y < top + slot ? -12 : y > bot - slot ? 12 : 0;
+      if (step) { sc.scrollTop += step; place(); }
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    h.onpointermove = (m) => { y = m.clientY; place(); };
+    const end = () => {
+      cancelAnimationFrame(raf); h.onpointermove = null; h.onpointerup = null; h.onpointercancel = null;
+      rows.forEach(r => { r.style.transform = ''; }); row.classList.remove('drag');
+      if (to !== from) { moveBar(barPrefs, from, to); barChanged(); }
+    };
+    h.onpointerup = end; h.onpointercancel = end;
+  };
+}
+
+// ---- Settings, HOW IT WORKS: every app by group, each opening to what it does, then the field notes ----------------
+function howHtml(over: AppId | null): string {
+  const open = keyOf(over);
+  const groups = (['Receive', 'Analyze', 'Transmit', 'Tools'] as const).map(cat => {
+    const apps = BAR_DEFAULT.filter(id => APPS.find(a => a.id === id)?.cat === cat && HOW[id]);
+    if (!apps.length) return '';
+    return `<div class="sset-sub how-cat" style="color:${tint(cat)}">${cat.toUpperCase()}</div><div class="how-list">${apps.map(id => {
+      const a = APPS.find(x => x.id === id)!, [what, where, tip] = HOW[id], needs = NEEDS_HACKRF.includes(id);
+      return `<details class="how-row" data-keys="${esc(`how it works help ${a.title} ${a.blurb} ${what} ${where} ${tip}`.toLowerCase())}" ${id === open ? 'open' : ''}>`
+        + `<summary><b style="color:${tint(cat)}">${esc(a.title.toUpperCase())}</b><small>${esc(a.blurb)}</small></summary>`
+        + `<div class="how-body"><p>${esc(what)}</p><div class="how-badges">${where ? `<span class="rc-badge">${esc(where)}</span>` : ''}<span class="rc-badge${needs ? ' hot' : ''}">${needs ? 'NEEDS A HACKRF' : 'RTL-SDR OR HACKRF'}</span></div>`
+        + `${tip ? `<p class="how-tip">${esc(tip)}</p>` : ''}<button class="chip" data-howopen="${id}">OPEN ${esc(a.title.toUpperCase())}</button></div></details>`;
+    }).join('')}</div>`;
+  }).join('');
+  const tips = TIPS.map(([k, v]) => `<div class="kv tip-row" data-keys="${esc(`tips field notes ${k} ${v}`.toLowerCase())}"><span>${esc(k)}</span><span>${esc(v)}</span></div>`).join('');
+  return `${groups}<div class="sset-sub">TIPS</div><div class="panel about">${tips}</div>`;
+}
+
 function renderSettings(view: HTMLElement): void {
   const over = settingsOver;
   const radioLine = radio ? (radio.kind === 'rtlsdr' ? radio.label : `HackRF · ${state.board || 'HackRF'}${state.firmware ? ' · fw ' + state.firmware : ''}`) : 'No radio attached';
   const appRows = thisAppRows(over);
-  const jumps: [string, string][] = [...(appRows ? [['app', over ? appName(over) : 'APP'] as [string, string]] : []), ['radio', 'RADIO'], ['look', 'LOOK'], ['station', 'STATION'], ['tx', 'TRANSMIT'], ['how', 'HOW IT WORKS'], ['log', 'LOG'], ['about', 'ABOUT']];
+  const jumps: [string, string][] = [...(appRows ? [['app', over ? appName(over) : 'APP'] as [string, string]] : []), ['radio', 'RADIO'], ['bar', 'BAR'], ['look', 'LOOK'], ['station', 'STATION'], ['tx', 'TRANSMIT'], ['how', 'HOW IT WORKS'], ['log', 'LOG'], ['about', 'ABOUT']];
   view.innerHTML = `
     <section class="controls settings-page">
     <input id="set-search" class="txin set-search" placeholder="Search settings" autocomplete="off" spellcheck="false">
-    <div class="radiocard ${radio ? 'on' : ''}"><div><b>${radio ? 'RADIO CONNECTED' : 'NO RADIO'}</b><small>${esc(radioLine)}</small></div>${radio ? '' : '<button id="set-connect" class="act">CONNECT</button>'}</div>
+    <div class="radiocard ${radio ? 'on' : ''}"><div id="set-radiocard">${radioCardHtml(radioLine)}</div>${radio ? '' : '<button id="set-connect" class="act">CONNECT</button>'}</div>
     <div class="set-jumps">${hsHtml(`<div class="tiles">${jumps.map(([id, l]) => `<button class="pill" data-jump="${id}">${l}</button>`).join('')}</div>`)}</div>
     ${secHtml('app', `THIS APP · ${over ? appName(over) : ''}`, appRows)}
     <section class="sset fold link" id="sec-radio" data-keys="radio gain lna vga amp agc bias tee ppm sample rate filter"><div class="sset-h">RADIO</div></section>
-    <section class="sset" id="sec-look"><div class="sset-h">LOOK</div>
-    <div class="skins">${SKINS.map(s => `<button class="skin" data-skin="${s.id}" style="background:${s.paper};border-color:${s.id === currentSkin().id ? s.accent : s.line};color:${s.ink}"><div class="skin-head"><span>${s.title}</span>${s.id === currentSkin().id ? `<span style="color:${s.accent}">●</span>` : ''}</div><div class="swatches">${[s.surface, s.panel, s.line, s.muted, s.accent, s.accent2].map(c => `<i style="background:${c}"></i>`).join('')}</div><div class="skin-readout" style="background:${s.surface};border-color:${s.accent}80;color:${s.accent}">92.3000 MHz</div></button>`).join('')}</div>${fsCan() ? srow('Full screen', 'No address bar or status bar on a phone. Swipe down from the top to see them for a moment.', swHtml('fs-toggle', fsOn()), 'full screen fullscreen status bar address bar') : ''}
+    <section class="sset" id="sec-bar" data-keys="bar order apps reorder drag ${esc(APPS.map(a => a.title + ' ' + a.blurb).join(' ').toLowerCase())}"><div class="sset-h">BAR</div>
+      ${srow('Opens on', 'Where Mayhem opens: Home, or the app you used last', segHtml([['home', 'HOME'], ['last', 'LAST APP']].map(([v, l]) => `<button data-setopens="${v}" class="${(v === 'last') === barPrefs.opensLast ? 'on' : ''}">${l}</button>`)), 'opens on start home last')}
+      <div class="barlist" id="barlist">${barChecklistHtml()}</div>
+      <div class="sset-note">Ticked apps sit in the bar along the bottom, in this order. Drag ≡ to move one.</div>
+    </section>
+    <section class="sset" id="sec-look" data-keys="look skin theme color waterfall palette inferno rainbow"><div class="sset-h">LOOK</div>
+    <div class="skins">${SKINS.map(s => `<button class="skin" data-skin="${s.id}" style="background:${s.paper};border-color:${s.id === currentSkin().id ? s.accent : s.line};color:${s.ink}"><div class="skin-head"><span>${s.title}</span>${s.id === currentSkin().id ? `<span style="color:${s.accent}">●</span>` : ''}</div><div class="swatches">${[s.surface, s.panel, s.line, s.muted, s.accent, s.accent2].map(c => `<i style="background:${c}"></i>`).join('')}</div><div class="skin-readout" style="background:${s.surface};border-color:${s.accent}80;color:${s.accent}">92.3000 MHz</div></button>`).join('')}</div>
+    <div class="sset-sub">WATERFALL</div><div class="wfpals">${WF_PALETTES.map(p => `<button class="wfpal ${p.id === wfPalette ? 'on' : ''}" data-wfpal="${p.id}"><span>${esc(p.title)}</span><i style="background:${wfGradient(p.id)}"></i><em>${p.id === wfPalette ? '●' : '○'}</em></button>`).join('')}</div>${fsCan() ? srow('Full screen', 'No address bar or status bar on a phone. Swipe down from the top to see them for a moment.', swHtml('fs-toggle', fsOn()), 'full screen fullscreen status bar address bar') : ''}
     ${srow('Units', 'Temperature, wind, rain, pressure, tire pressure and distances on land. Flights keep feet and knots, Ships keep knots.', segHtml((['metric', 'imperial'] as const).map(u => `<button data-setunits="${u}" class="${U.units() === u ? 'on' : ''}">${u === 'metric' ? 'METRIC' : 'IMPERIAL'}</button>`)), 'units metric imperial celsius fahrenheit km miles mph psi kpa hpa inhg')}</section>
     <section class="sset" id="sec-station"><div class="sset-h">STATION</div>
     <div class="panel about" id="station">
@@ -8909,18 +9101,7 @@ function renderSettings(view: HTMLElement): void {
     <section class="sset" id="sec-tx"><div class="sset-h">TRANSMIT</div>
       ${srow('Transmit', 'The transmit apps. Most bands need a license: use a dummy load or an antenna rated for the frequency.', swHtml('tx-toggle', tx.enabled), 'tx enable')}
     </section>
-    <section class="sset" id="sec-how"><div class="sset-h">HOW IT WORKS</div><div class="panel about">${over && appAbout[over] ? `<div class="kv"><span>${esc(appName(over))}</span><span>${esc(appAbout[over]!)}</span></div>` : ''}      <div class="kv"><span>Browsers</span><span>Chrome / Edge on Android phones, Windows, macOS, Linux — the same desktop web app runs everywhere. iPhone/iPad and Firefox have no WebUSB; on Android phones the app on Google Play is the recommended route.</span></div>
-      <div class="kv"><span>Power</span><span>a HackRF Pro can exceed what a phone's OTG port supplies — use a powered OTG hub if RX reads all zeros</span></div>
-      <div class="kv"><span>Reading LOG</span><span>iqRMS ≈ 0.85 with dcI = dcQ ≈ 0.6 means all-zero buffers: cable, power, or a PortaPack not in HackRF mode</span></div>
-      <div class="kv"><span>Tuning</span><span>press the waterfall and slide left or right — the amber guide and readout follow your finger, and the radio retunes when you lift it. Tap-and-release on a signal does the same.</span></div>
-      <div class="kv"><span>ADS-B map</span><span>aircraft plot live on an OpenStreetMap view (Leaflet loads from the CDN when you open the app); it follows the traffic until you drag, ⌖ re-arms it; allow location so single-frame positions and the map center use your spot</span></div>
-      <div class="kv"><span>Pagers</span><span>the Pagers app decodes FLEX (1600/3200/6400, 2- and 4-level) and POCSAG (512/1200/2400) on the same channel, like PDW — messages carry capcode, and FLEX its cycle/frame; in SINGLE mode it can be set to just one of them</span></div>
-      <div class="kv"><span>Squelch + scan</span><span>squelch gates audio by channel power against a tracked noise floor; SCAN hops through your bookmarks and holds on any channel where the squelch opens</span></div>
-      <div class="kv"><span>Gain</span><span>radio defaults LNA 24 / VGA 24 / amp off (the amp overloads strong FM); ADS-B uses Mayhem's LNA 32 / VGA 32 / amp on</span></div>
-      <div class="kv"><span>Windows</span><span>bind the HackRF to the WinUSB driver (Zadig), the same step hackrf_transfer needs; libusbK / libusb-win32 bindings hide it from the browser</span></div>
-      <div class="kv"><span>macOS</span><span>nothing to install — just close any other SDR program that has the HackRF open</span></div>
-      <div class="kv"><span>Linux</span><span>the udev rule from the hackrf package (53-hackrf.rules) grants access; replug after adding it</span></div>
-      <div class="kv"><span>Keyboard</span><span>digits: wheel, click top/bottom, type · ← → tune · ↑ ↓ step size · M mode · X mute · S squelch · B bookmark · Space scan · A amp · G AGC · [ ] LNA · − = VGA · L log · Esc closes Settings, then goes home · mouse wheel over the waterfall tunes, Ctrl+wheel changes the step</span></div></div></section>
+    <section class="sset" id="sec-how"><div class="sset-h">HOW IT WORKS</div>${howHtml(over)}</section>
     <section class="sset" id="sec-log"><div class="sset-h">LOG</div>${srow('Log', 'Everything the radio and the decoders reported, to read, save or share', '<button id="set-log" class="tog">OPEN</button>')}</section>
     <section class="sset" id="sec-about"><div class="sset-h">ABOUT</div>
     <div class="panel about">
@@ -8941,12 +9122,25 @@ function renderSettings(view: HTMLElement): void {
     <div class="panel credits" id="credits"><div class="credits-roll" id="credits-roll">${(() => { const inner = CREDITS.map(([h, t]) => h ? `<h4>${esc(t)}</h4>` : `<p>${esc(t)}</p>`).join(''); return `<div class="credits-copy">${inner}</div><div class="credits-copy" aria-hidden="true">${inner}</div>`; })()}</div></div>
     </section></section>`;
   qa<HTMLInputElement>('[data-st]', view).forEach(i => i.oninput = () => { const k = i.dataset.st as keyof Station; const v = k === 'call' || k === 'grid' ? i.value.toUpperCase() : i.value; if (k === 'call' || k === 'grid') i.value = v; state.ham.station[k] = v; saveStation(); });
-  qa<HTMLButtonElement>('[data-skin]', view).forEach(b => b.onclick = () => { applySkin(SKINS.find(s => s.id === b.dataset.skin)!); refreshSettings(); });
+  qa<HTMLButtonElement>('[data-skin]', view).forEach(b => b.onclick = () => { applySkin(SKINS.find(s => s.id === b.dataset.skin)!); applyWfPalette(); refreshSettings(); });
+  qa<HTMLButtonElement>('[data-wfpal]', view).forEach(b => b.onclick = () => { setWfPalette(b.dataset.wfpal as WfPalette); refreshSettings(); });
+  qa<HTMLButtonElement>('[data-setopens]', view).forEach(b => b.onclick = () => { barPrefs.opensLast = b.dataset.setopens === 'last'; saveBarPrefs(); refreshSettings(); });
+  const bl = q<HTMLElement>('#barlist', view); if (bl) bindBarList(bl);
+  qa<HTMLButtonElement>('[data-howopen]', view).forEach(b => b.onclick = () => { const id = b.dataset.howopen as AppId; if (hiddenApp(id)) { setStatus(appName(id) + ': transmitting needs a HackRF', false); return; } closeSettings(); openPicked(id); });
   const tg = q('#tx-toggle'); if (tg) tg.onclick = () => { tx.setEnabled(!tx.enabled); refreshSettings(); };
   const fs = q('#fs-toggle'); if (fs) fs.onclick = () => { setFsWanted(!fsOn()); setTimeout(refreshSettings, 300); };
   // the app under Settings redraws at once in the new units
   qa<HTMLButtonElement>('[data-setunits]', view).forEach(b => b.onclick = () => { U.setUnits(b.dataset.setunits as U.UnitSystem); refreshSettings(); if (settingsOver) redraw(settingsOver); });
   bindSettings(view);
+  // the card's numbers follow the radio while Settings is open
+  clearInterval(radioCardTimer);
+  let cardShown = '';
+  radioCardTimer = window.setInterval(() => {
+    const el = q('#set-radiocard');
+    if (!el || !settingsOpen()) { clearInterval(radioCardTimer); return; }
+    const html = radioCardHtml(radioLine);
+    if (html !== cardShown) { cardShown = html; el.innerHTML = html; }
+  }, 500);
   $('install').onclick = async () => { if (installPrompt) { await installPrompt.prompt(); installPrompt = null; refreshSettings(); } };
   attachCreditsScroller($('credits'), $('credits-roll'));
 }
@@ -9003,7 +9197,7 @@ function bindSettings(view: HTMLElement): void {
   const search = q<HTMLInputElement>('#set-search', view);
   if (search) search.oninput = () => {
     const t = search.value.trim().toLowerCase();
-    qa<HTMLElement>('.srow', view).forEach(r => { r.hidden = !!t && !(r.dataset.keys ?? '').includes(t); });
+    qa<HTMLElement>('.srow, .how-row, .tip-row, .barrow', view).forEach(r => { r.hidden = !!t && !(r.dataset.keys ?? r.textContent ?? '').toLowerCase().includes(t); });
     // while searching, every group with a hit is open; clearing the search puts the folds back as they were
     qa<HTMLElement>('.sset', view).forEach(sec => {
       const hit = !!t && (sec.textContent!.toLowerCase().includes(t) || (sec.dataset.keys ?? '').includes(t) || qa<HTMLElement>('.srow', sec).some(r => (r.dataset.keys ?? '').includes(t)));
@@ -9241,6 +9435,8 @@ function logLineHtml(l: string, n: number): string {
     : `<span class="lh">${esc(rest)}</span>`;
   return `<div class="li kind${n % 2 ? '' : ' alt'}" style="--kc:${sc}"><span class="lq">${esc(head.slice(0, k[0]))}</span><b style="color:${c}">${esc(k[1])}</b>${restHtml}${tl}</div>`;
 }
+/** A ship points its way only when it reports a heading or is moving; a moored one (nav status 5) is a plain dot. */
+const shipHeading = (v: Vessel) => v.navStatus !== 5 && (v.hdg !== undefined || (v.sog ?? 0) > 0.3) ? v.hdg ?? v.cog : undefined;
 function refreshAis(): void {
   if (state.app !== 'ais') return;
   const c = q('#ais-count'); if (c) c.textContent = `⚓ ${counts['ais'] ?? 0} PACKETS · ${state.aisTable.length} VESSELS`;
@@ -9248,12 +9444,12 @@ function refreshAis(): void {
   const list = q('#ais-list'), mapEl = q('#ais-map'), logEl = q('#ais-log'); if (!list || !mapEl || !logEl) return;
   list.hidden = state.aisView !== 'list'; mapEl.hidden = state.aisView !== 'map'; logEl.hidden = state.aisView !== 'log';
   if (paused.has('ais')) { qa<HTMLElement>('[data-mmsi]', list).forEach(d => d.classList.toggle('gold', Number(d.dataset.mmsi) === state.aisSel)); renderShipCard(state.aisTable.find(v => v.mmsi === state.aisSel)); return; }
-  list.innerHTML = state.aisTable.length ? state.aisTable.map((v, i) => `<div class="li row2 tap ${i % 2 ? 'alt' : ''} ${v.mmsi === state.aisSel ? 'gold' : ''}" data-mmsi="${v.mmsi}"><b>${esc(v.name || String(v.mmsi))}</b><span>${v.name ? v.mmsi + ' · ' : ''}${v.lat !== undefined && v.lon !== undefined ? `${v.lat.toFixed(3)},${v.lon.toFixed(3)}` : 'no fix'}${v.sog !== undefined ? ` · ${v.sog.toFixed(1)} kn` : ''}</span></div>`).join('') : emptyState('ais');
+  list.innerHTML = state.aisTable.length ? state.aisTable.map((v, i) => `<div class="li row2 tap ${i % 2 ? 'alt' : ''} ${v.mmsi === state.aisSel ? 'gold' : ''}" data-mmsi="${v.mmsi}"><b>${esc(v.name || String(v.mmsi))}</b><span>${v.name ? v.mmsi + ' · ' : ''}${v.lat !== undefined && v.lon !== undefined ? `${v.lat.toFixed(3)},${v.lon.toFixed(3)}` : 'no fix'}${v.sog !== undefined ? ` · ${v.sog.toFixed(1)} kn` : ''}${shipTypeName(v.shipType) ? ` · ${esc(shipTypeName(v.shipType))}` : ''}</span></div>`).join('') : emptyState('ais');
   qa<HTMLElement>('[data-mmsi]', list).forEach(d => d.onclick = () => { state.aisSel = Number(d.dataset.mmsi); const v = state.aisTable.find(x => x.mmsi === state.aisSel); if (v?.lat !== undefined) state.aisView = 'map'; refreshAis(); });
   renderShipCard(state.aisTable.find(v => v.mmsi === state.aisSel));
   if (state.aisView === 'map') geo?.invalidate();
   geo?.setEmpty(state.aisTable.some(v => v.lat !== undefined) ? '' : 'NOTHING HEARD YET', mapEmptySub('ships and buoys appear here as their AIS position reports come in'));
-  geo?.update(state.aisTable.filter(v => v.lat !== undefined && v.lon !== undefined).map(v => ({ id: String(v.mmsi), lat: v.lat!, lon: v.lon!, heading: v.hdg ?? v.cog, label: v.name || String(v.mmsi), kind: (v.cls === 'AtoN' ? 'aton' : v.cls === 'base' ? 'object' : 'ship') as GeoItem['kind'] })), String(state.aisSel));
+  geo?.update(state.aisTable.filter(v => v.lat !== undefined && v.lon !== undefined).map(v => ({ id: String(v.mmsi), lat: v.lat!, lon: v.lon!, heading: shipHeading(v), label: v.name || String(v.mmsi), kind: (v.cls === 'AtoN' ? 'aton' : v.cls === 'base' ? 'object' : 'ship') as GeoItem['kind'] })), String(state.aisSel));
 }
 /** Ham Map's layers, in the order of their chips: APRS packets, and the FT8 and JS8 stations that sent a grid. */
 const HAM_LAYERS: [HamLayer, string][] = [['aprs', 'APRS'], ['ft8', 'FT8'], ['js8', 'JS8']];
@@ -9425,7 +9621,7 @@ function renderShipCard(v: Vessel | undefined): void {
   card.hidden = false;
   const who = mmsiInfo(v.mmsi);
   const kind = v.cls === 'A' ? 'Class A' : v.cls === 'B' ? 'Class B' : v.cls === 'base' ? 'Base station' : v.cls === 'AtoN' ? (v.virtualAton ? 'Virtual aid to navigation' : 'Aid to navigation') : v.cls === 'SAR' ? 'SAR aircraft' : who.kind;
-  const key = [v.mmsi, v.name, v.callsign, v.imo, v.shipType, v.atonType, v.dest, v.eta?.day, v.dimA, v.dimB, v.dimC, v.dimD, v.draft, v.cls, v.navStatus].join('|');
+  const key = [v.mmsi, v.name, v.callsign, v.imo, v.shipType, v.atonType, v.dest, v.eta?.day, v.dimA, v.dimB, v.dimC, v.dimD, v.draft, v.cls, v.navStatus, v.alt !== undefined].join('|');
   if (key !== shipCardKey) {
     shipCardKey = key;
     const lines: string[] = [];
@@ -9447,7 +9643,7 @@ function renderShipCard(v: Vessel | undefined): void {
       </div>
       <div class="accard-body"><div class="accard-id">${lines.join('')}</div></div>
       <div class="accard-grid">
-        ${['SPEED', 'COURSE', 'HEADING', 'TURN', 'POSITION', 'FROM YOU', 'HEARD', 'FIRST HEARD', 'MESSAGES'].map(k => `<div><span class="k">${k}</span><span class="v" data-f="${k}">—</span></div>`).join('')}
+        ${['SPEED', 'COURSE', 'HEADING', 'TURN', 'POSITION', 'FROM YOU', 'HEARD', 'FIRST HEARD', 'MESSAGES', ...(v.alt !== undefined ? ['ALTITUDE'] : [])].map(k => `<div><span class="k">${k}</span><span class="v" data-f="${k}">—</span></div>`).join('')}
       </div>`;
     qa<HTMLButtonElement>('[data-shipclose]', card).forEach(b => b.onclick = () => { state.aisSel = 0; refreshAis(); });
     qa<HTMLButtonElement>('[data-shipmap]', card).forEach(b => b.onclick = () => { state.aisView = 'map'; refreshAis(); const s = state.aisTable.find(x => x.mmsi === state.aisSel); if (s?.lat !== undefined && s.lon !== undefined) geo?.center(s.lat, s.lon); });
@@ -9464,6 +9660,7 @@ function renderShipCard(v: Vessel | undefined): void {
   set('HEARD', ageText(now - v.lastMs));
   set('FIRST HEARD', `${ageText(now - v.firstMs)} · ${new Date(v.firstMs).toLocaleTimeString()}`);
   set('MESSAGES', String(v.msgs));
+  if (v.alt !== undefined) set('ALTITUDE', `${v.alt} m`);
 }
 // ---- APRS station card: the packet fields, the symbol, and who the callsign belongs to --------------------------------
 const stationInfo = new Map<string, CallInfo | null>();
@@ -9550,7 +9747,7 @@ function renderAcCard(a: Aircraft | undefined): void {
   card.hidden = false;
   lookupAircraft(a);
   const info = acInfo.get(a.icao);
-  const key = `${a.icao}|${a.flight ?? ''}|${info?.done ? 1 : 0}`;
+  const key = `${a.icao}|${a.flight ?? ''}|${info?.done ? 1 : 0}|${a.squawk ?? ''}`;
   const call = (a.flight ?? '').trim();
   if (key !== acCardKey) {
     acCardKey = key;
@@ -9560,6 +9757,8 @@ function renderAcCard(a: Aircraft | undefined): void {
     const model = [info?.maker, info?.type].filter((s): s is string => !!s).join(' '); if (model) lines.push(`<div class="accard-model">${esc(model)}</div>`);
     if (info?.owner) lines.push(`<div class="accard-op">${esc(info.owner)}</div>`);
     if (info?.country) lines.push(`<div class="accard-country">${esc(info.country)}</div>`);
+    // the squawk, and what 7500, 7600 and 7700 mean, in red
+    if (a.squawk) { const why = squawkMeaning(a.squawk); lines.push(`<div class="accard-sq${why ? ' alert' : ''}">squawk ${esc(a.squawk)}${why ? ` · ${why}` : ''}</div>`); }
     if (!lines.length) lines.push(`<div class="accard-country">${info && !info.done ? 'looking up the registry…' : info?.done ? 'not in the registry' : ''}</div>`);
     const side = info?.photo ? `<img class="accard-photo" src="${esc(info.photo)}" alt="" onerror="this.remove()">` : '';
     card.innerHTML = `
@@ -9615,7 +9814,21 @@ function refreshCapture(): void {
   if (info) info.textContent = state.capturing ? `${(state.captureBytes / 1e6).toFixed(1)} MB · ${state.captureName}` : `${state.rate / 1e6} Msps · ${(state.rate * 2 / 1e6).toFixed(1)} MB/s`;
   if (el) el.innerHTML = state.captures.length ? state.captures.map((f, i) => `<div class="li row2 ${i % 2 ? 'alt' : ''}"><span class="tap" data-dl="${f.name}">${f.name}  ${(f.size / 1e6).toFixed(1)} MB</span><button class="link" data-del="${f.name}">✕</button></div>`).join('') : emptyState('capture');
   qa<HTMLElement>('[data-dl]').forEach(d => d.onclick = () => worker?.postMessage({ type: 'capture', cmd: 'get', name: d.dataset.dl }));
-  qa<HTMLElement>('[data-del]').forEach(d => d.onclick = () => worker?.postMessage({ type: 'capture', cmd: 'remove', name: d.dataset.del }));
+  qa<HTMLElement>('[data-del]').forEach(d => d.onclick = () => askDeleteCapture(d.dataset.del!));
+}
+/** A capture is deleted only after DELETE in this box; KEEP, Esc or a tap outside leaves it. */
+function askDeleteCapture(name: string): void {
+  if (q('#cap-del')) return;
+  const el = document.createElement('div');
+  el.id = 'cap-del'; el.className = 'modal';
+  el.innerHTML = `<div class="modal-card"><h3>Delete capture?</h3><p>${esc(name)} and its .txt sidecar are removed from this browser for good.</p><div class="modal-actions"><button id="cap-keep" class="chip">KEEP</button><button id="cap-delete" class="chip primary">DELETE</button></div></div>`;
+  document.body.appendChild(el);
+  const close = () => { el.remove(); document.removeEventListener('keydown', esc1); };
+  const esc1 = (e: KeyboardEvent) => { if (e.key === 'Escape') close(); };
+  document.addEventListener('keydown', esc1);
+  el.onclick = (e) => { if (e.target === el) close(); };
+  $('cap-keep').onclick = close;
+  $('cap-delete').onclick = () => { worker?.postMessage({ type: 'capture', cmd: 'remove', name }); close(); };
 }
 function esc(s: string): string { return s.replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]!)); }
 
@@ -9749,7 +9962,7 @@ function ensureWorker(): Worker {
         break;
       }
       case 'sq': if (m.open !== state.sqOpen) { state.sqOpen = m.open; refreshSquelch(); } break;
-      case 'signals': if (scope && state.app !== 'lookingglass' && state.app !== 'search') { const c = spanCenter(); lastSignals = m.list as SeenSignal[]; (window as unknown as { mmSignals: SeenSignal[] }).mmSignals = lastSignals; launchAutoPick(); audioAutoPick(); scope.setSignals((m.list as { hz: number; db: number; cls: string; conf: number; val: number }[]).map(s => ({ frac: 0.5 + (s.hz - c) / state.rate, val: s.val, text: `${(s.hz / 1e6).toFixed(3)}${s.cls ? ` ${s.cls}${s.conf < 0.6 ? '?' : ''}` : ''} ${Math.round(s.db)}dB` }))); } break;
+      case 'signals': if (scope && state.app !== 'lookingglass' && state.app !== 'search') { const c = spanCenter(); lastSignals = m.list as SeenSignal[]; (window as unknown as { mmSignals: SeenSignal[] }).mmSignals = lastSignals; launchAutoPick(); audioAutoPick(); if (state.app === 'prowl') refreshProwlTiles(); scope.setSignals((m.list as { hz: number; db: number; cls: string; conf: number; val: number }[]).map(s => ({ frac: 0.5 + (s.hz - c) / state.rate, val: s.val, text: `${(s.hz / 1e6).toFixed(3)}${s.cls ? ` ${s.cls}${s.conf < 0.6 ? '?' : ''}` : ''} ${Math.round(s.db)}dB` }))); } break;
       case 'monitor': onMonitor(m); break;
       case 'digi': { const g = state.ham.digi; g.text += m.text as string; if (g.text.length > 4000) g.text = g.text.slice(-3000); const el = q('#digi-text'); if (el) { el.textContent = g.text; el.scrollTop = el.scrollHeight; } break; }
       case 'digiStatus': {
@@ -9807,7 +10020,7 @@ function ensureWorker(): Worker {
         refreshSweepCard(0, m.sweeps); refreshHits(); break;
       }
       case 'capture': state.capturing = m.recording; state.captureName = m.name; state.captureBytes = m.bytes; refreshCapture(); break;
-      case 'captures': state.captures = m.files; refreshCapture(); break;
+      case 'captures': state.captures = m.files; refreshCapture(); if (state.app === 'transmit') txReplayRedraw?.(); break;
       case 'captureFile': { const f = m.file as File; const url = URL.createObjectURL(f); const a = document.createElement('a'); a.href = url; a.download = m.name; a.click(); setTimeout(() => URL.revokeObjectURL(url), 60_000); if (m.sidecar) { const b = new Blob([m.sidecar], { type: 'text/plain' }); const u2 = URL.createObjectURL(b); const a2 = document.createElement('a'); a2.href = u2; a2.download = (m.name as string).replace(/\.c8$/, '.txt'); setTimeout(() => { a2.click(); setTimeout(() => URL.revokeObjectURL(u2), 60_000); }, 500); } break; }
     }
   };
@@ -10057,7 +10270,7 @@ function bindDesktop(): void {
     // drop the radio mid-session.
     const t = e.target as HTMLElement | null;
     if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable)) return;
-    const tunable = !state.app || state.app === 'audio' || state.app === 'capture' || state.app === 'pager' || state.app === 'aprs' || state.app === 'ais' || state.app === 'ert' || state.app === 'lora' || state.app === 'acars' || state.app === 'subghz' || state.app === 'devices' || state.app === 'analyzer';
+    const tunable = !state.app || state.app === 'audio' || state.app === 'capture' || state.app === 'pager' || state.app === 'aprs' || state.app === 'ais' || state.app === 'ert' || state.app === 'lora' || state.app === 'acars' || state.app === 'devices' || state.app === 'analyzer';
     // start typing a number (or F) to key in a frequency; a focused readout digit already took its own keystroke
     if ((tunable || state.app === 'ham') && !e.defaultPrevented && !e.ctrlKey && !e.metaKey && !e.altKey && /^[0-9.,fF]$/.test(e.key)) {
       freqEntry(/[fF]/.test(e.key) ? '' : e.key); e.preventDefault(); return;
@@ -10077,7 +10290,7 @@ function bindDesktop(): void {
       case ' ': if (state.app === 'audio') { setScanning(!state.scanning); e.preventDefault(); } break;
       case 'l': case 'L': $('log-toggle').click(); break;
       case 'x': case 'X': toggleMute(); break;
-      case 'Escape': if (radioPanelOpen()) closeRadioPanel(); else if (settingsOpen()) closeSettings(); else if (adsbFull && state.app === 'adsb') setAdsbFull(false); else if (meters.full && state.app === 'ert') setMetersFull(false); else if (fleetUi.full && state.app === 'fleet') setFleetFull(false); else if (loraUi.full && state.app === 'lora') setLoraFull(false); else if (sondeUi.full && state.app === 'sondes') setSondeFull(false); else if (state.app) open(null); break;
+      case 'Escape': if (radioPanelOpen()) closeRadioPanel(); else if (settingsOpen()) closeSettings(); else if (adsbFull && state.app === 'adsb') setAdsbFull(false); else if (meters.full && state.app === 'ert') setMetersFull(false); else if (fleetUi.full && state.app === 'fleet') setFleetFull(false); else if (loraUi.full && state.app === 'lora') setLoraFull(false); else if (sondeUi.full && state.app === 'sondes') setSondeFull(false); else if (trainsUi.full && state.app === 'trains') setTrainsFull(false); else if (state.app) open(null); break;
     }
   });
   // chip strips, the app strips and lists scroll with a held mouse button (touch already pans natively); a real drag
@@ -10191,18 +10404,28 @@ function initFullscreen(): void {
 let versionText = 'dev build', releaseUrl = 'https://github.com/RocketGod-git/mayhem-mobile/releases/tag/latest';
 
 // ---- the phone shell: the Android app's bars ---------------------------------------------------------------------
-/** The app bar's order, the native apps' default: by what they do (receive, analyze, transmit, tools), as Home lists them. */
-const barApps = (): AppId[] => (['Receive', 'Analyze', 'Transmit', 'Tools'] as const).flatMap(c => APPS.filter(a => a.cat === c && a.id !== 'settings' && !MERGED_INTO[a.id] && !hiddenApp(a.id)).map(a => a.id));
+/** Every app the bar can hold, in the native apps' default order: by what they do (receive, analyze, transmit, tools). */
+const BAR_DEFAULT: AppId[] = (['Receive', 'Analyze', 'Transmit', 'Tools'] as const).flatMap(c => APPS.filter(a => a.cat === c && a.id !== 'settings' && !MERGED_INTO[a.id]).map(a => a.id));
+const BAR_KEY = 'mm.bar';
+/** Settings, BAR: the order dragged, the apps ticked, and where Mayhem opens. */
+const barPrefs: BarState = (() => { try { return loadBar(localStorage.getItem(BAR_KEY), BAR_DEFAULT); } catch { return loadBar(null, BAR_DEFAULT); } })();
+function saveBarPrefs(): void { try { localStorage.setItem(BAR_KEY, saveBar(barPrefs, BAR_DEFAULT)); } catch { /* storage blocked */ } }
+/** The ticked apps in the user's order, less any this radio hides. */
+const barApps = (): AppId[] => (barList(barPrefs) as AppId[]).filter(id => !hiddenApp(id));
+/** Remember the app opened, for "Opens on: LAST APP". Settings and Home are never the one remembered. */
+function noteOpened(app: AppId | null): void {
+  const k = keyOf(app);
+  if (!k || k === 'settings' || !BAR_DEFAULT.includes(k) || barPrefs.last === k) return;
+  barPrefs.last = k; saveBarPrefs();
+}
 /** The app's name in capitals, as its header, Settings and FAVES show it. */
-const appName = (id: AppId) => APPS.find(a => a.id === id)?.title.toUpperCase() ?? (id === 'subghz' ? 'SUB-GHZ' : id.toUpperCase());
+const appName = (id: AppId) => APPS.find(a => a.id === id)?.title.toUpperCase() ?? id.toUpperCase();
 /** The bar's own shorter names for the longest apps, so a key never takes half the strip (the readout tag uses them too, for
  *  the same room); the header, Settings and FAVES say the full name. */
-const BAR_LABEL: Partial<Record<AppId, string>> = { lookingglass: 'GLASS', sat: 'SATS', subghz: 'SUB-GHZ', transmit: 'TX', uat: 'FLIGHT UAT', ert: 'METERS', acars: 'FLIGHT MSGS', adsb: 'FLIGHTS', sondes: 'BALLOONS' };
+const BAR_LABEL: Partial<Record<AppId, string>> = { lookingglass: 'GLASS', sat: 'SATS', transmit: 'TX', uat: 'FLIGHT UAT', ert: 'METERS', acars: 'FLIGHT MSGS', adsb: 'FLIGHTS', sondes: 'BALLOONS' };
 const barLabel = (id: AppId) => BAR_LABEL[id] ?? appName(id);
 /** A wide screen (tablet or desktop): Home lays the waterfall over one sideways row of app tiles, as on iPad. */
 const wideShell = matchMedia('(min-width: 720px)');
-/** Where "home" is: the launcher at every width, as in the native apps. */
-const homeApp = (): AppId | null => null;
 /**
  * The apps bar, the native apps' strip at every width: a gear, then each app's glyph and short name in the bar's
  * order, the open one lit in its group's color, the blurb on hover.
@@ -10244,7 +10467,7 @@ function initShell(): void {
 /** Each app's card tag and title (the Android app's). */
 const CARD_TITLE: Partial<Record<AppId, [string, string]>> = {
   js8: ['JS8', 'HF MESSAGING'],
-  hamplus: ['REPEATERS', 'EVERY CHANNEL · EVERY TALKER'], cb: ['CB RADIO', 'ALL 40 CHANNELS'], pager: ['PAGER', 'PAGER MESSAGES'], hd: ['HD RADIO', 'STATION DATA · ART · TRAFFIC'], vdl2: ['FLIGHT MSGS', 'AIRLINE MESSAGES'], acars: ['FLIGHT MSGS', 'AIRLINE MESSAGES'], trains: ['TRAINS', 'END OF TRAIN · TRAIN CONTROL'], fleet: ['DISPATCH', 'TRUNKED DISPATCH · CALLS'], cell: ['CELL', 'CELL TOWERS · ALERTS'], atsc: ['TV', 'DIGITAL TV'], subghz: ['SUB-GHZ', 'SENSORS · REMOTES · KEYS'],
+  hamplus: ['REPEATERS', 'EVERY CHANNEL · EVERY TALKER'], cb: ['CB RADIO', 'ALL 40 CHANNELS'], pager: ['PAGER', 'PAGER MESSAGES'], hd: ['HD RADIO', 'STATION DATA · ART · TRAFFIC'], vdl2: ['FLIGHT MSGS', 'AIRLINE MESSAGES'], acars: ['FLIGHT MSGS', 'AIRLINE MESSAGES'], trains: ['TRAINS', 'END OF TRAIN · TRAIN CONTROL'], fleet: ['DISPATCH', 'TRUNKED DISPATCH · CALLS'], cell: ['CELL', 'CELL TOWERS · ALERTS'], atsc: ['TV', 'DIGITAL TV'],
   ert: ['METERS', 'UTILITY METERS'], lora: ['MESH', 'MESH RADIO TEXT'], sondes: ['BALLOONS', 'WEATHER BALLOONS'], btle: ['BLUETOOTH', 'BLUETOOTH DEVICES'], adsb: ['AIRCRAFT', 'AIRCRAFT OVERHEAD'], ais: ['SHIPS', 'SHIPS NEARBY'], aprs: ['HAM MAP', 'STATIONS ON THE MAP'], uat: ['FLIGHT UAT', 'FLIGHT WEATHER · SMALL PLANES'],
   devices: ['DEVICES', 'KEYS · REMOTES · SENSORS'], spectrum: ['SPECTRUM', 'ANALYZER · ZERO SPAN'], analyzer: ['ANALYZER', 'CAPTURE · DEMOD · COMPARE'], capture: ['CAPTURE', 'RAW IQ TO FILE'], prowl: ['PROWL', 'HUNTING FOR VOICE'], lookingglass: ['GLASS', 'WIDEBAND SWEEP'],
   search: ['SEARCH', 'ACTIVE FREQUENCIES'], transmit: ['TX', 'IDLE'], troll: ['TROLL', 'IDLE'],
@@ -10259,7 +10482,7 @@ const APP_TECH: Partial<Record<AppId, string>> = {
   pager: 'POCSAG · FLEX · REFLEX', lora: 'LORA · MESHTASTIC · MESHCORE · LORAWAN', adsb: 'ADS-B · MODE S · 1090 MHZ',
   uat: 'UAT · FIS-B · 978 MHZ', acars: 'ACARS · VHF AIRBAND', vdl2: 'VDL MODE 2 · 136.975 MHZ', trains: 'EOT · HOT · PTC 220 MHZ',
   ais: 'AIS · 161.975 / 162.025 MHZ', cell: 'LTE · SIB · WEA · ETWS', devices: 'OOK · FSK · TPMS · Z-WAVE · 315–915 MHZ',
-  subghz: 'OOK · FSK · 315–915 MHZ', js8: 'JS8 · 8-FSK · HF USB', ham: 'SSB · CW · FM · FT8 · SSTV',
+  js8: 'JS8 · 8-FSK · HF USB', ham: 'SSB · CW · FM · FT8 · SSTV',
   hamplus: 'FM · DMR · D-STAR · FUSION · P25 · NXDN · M17', cb: 'CB · 26.965–27.405 MHZ · AM · FM · SSB', aprs: 'APRS · AX.25 · 144.390 MHZ',
   ert: 'ERT · GRIDSTREAM · 802.15.4G', btle: 'BLE · ADVERTISING · 2.4 GHZ', sat: 'SGP4 · DOPPLER · APT · LRPT · AX.25',
   sondes: 'RS41 · DFM · M10 · 400–406 MHZ', atsc: 'ATSC 1.0 · 8VSB · PSIP', prowl: 'NFM · VOICE ACTIVITY HUNT',
@@ -10534,6 +10757,7 @@ function showFaves(open: boolean): void {
 
 function init(): void {
   loadSkin();
+  applyWfPalette();
   initFullscreen();
   const supported = 'usb' in navigator;
   $('unsupported').hidden = supported;
@@ -10603,8 +10827,9 @@ function init(): void {
   // Not `render(null)`: the launcher needs the same configuration going Home gives it. Rendering alone left
   // the first view with whatever the defaults happened to be - mode WFM and a span centre of zero - so the
   // frequency picker computed its taps against nothing and appeared not to work until you had entered an app
-  // and come back.
-  open(homeApp());
+  // and come back. Settings, BAR can have it open on the last app used instead of Home.
+  const first = startApp(barPrefs) as AppId | null;
+  if (first) { open(null); openPicked(first); } else open(null);
   if (supported) {
     // Already granted to this origin: open it without waiting to be asked. WebUSB allows that for a device the
     // user has permitted before, so the receiver is running by the time the page has finished settling.
