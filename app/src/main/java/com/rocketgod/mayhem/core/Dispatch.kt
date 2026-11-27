@@ -8,6 +8,7 @@ import com.rocketgod.mayhem.core.fleet.FleetAuto
 import com.rocketgod.mayhem.core.fleet.FleetProcessor
 import com.rocketgod.mayhem.core.fleet.FleetSnap
 import com.rocketgod.mayhem.core.fleet.KnownState
+import com.rocketgod.mayhem.core.fleet.SmartNet
 import com.rocketgod.mayhem.core.fleet.Lock
 import com.rocketgod.mayhem.core.fleet.SystemRow
 import com.rocketgod.mayhem.core.fleet.TgPrefs
@@ -296,9 +297,11 @@ object Dispatch {
     fun saveKnown() {
         val file = knownFile ?: return
         val k = runCatching { Apps.fleet.known() }.getOrNull() ?: return
-        if (k.systems.isEmpty() && k.units.isEmpty()) return
+        if (k.systems.isEmpty() && k.units.isEmpty() && k.plans.isEmpty()) return
         Thread { runCatching { val tmp = File(file.path + ".tmp"); tmp.writeText(k.toJson().toString()); tmp.renameTo(file) } }.start()
     }
+    /** A Type II channel plan entered (or forgotten, null) for the control channel on [ccHz]: kept on the phone at once. */
+    fun setPlan(ccHz: Long, plan: SmartNet.Custom?) { Apps.fleet.setOswPlan(ccHz, plan); saveKnown() }
     private fun loadKnown(): KnownState? = runCatching { knownFile?.takeIf { it.exists() }?.readText()?.let { KnownState.fromJson(JSONObject(it)) } }.getOrNull()
     /** CLEAR forgets what was kept too. */
     fun forget() { runCatching { knownFile?.delete() } }

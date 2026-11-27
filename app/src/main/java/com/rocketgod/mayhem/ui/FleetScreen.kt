@@ -45,7 +45,15 @@ import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalDensity
 import kotlinx.coroutines.launch
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Slider
+import androidx.compose.material3.TextButton
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.input.KeyboardType
+import com.rocketgod.mayhem.core.fleet.SmartNet
 import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -776,7 +784,9 @@ private fun OnAirCard(c: CallRow, s: FleetSnap, now: Long, audioOn: Boolean, fol
     val badge = if (ended) "ENDED" else if (c.emergency) "EMERGENCY" else if (c.outside) "OTHER SYSTEM" else if (c.muted) "MUTED" else if (playing) "PLAYING" else "ON AIR"
     val lpName = if (c.proto == "NXDN" || c.proto == "SMARTNET") "CH" else "LPCN"; val lp = if (c.lpcn >= 0) " · $lpName ${c.lpcn}" else ""
     val ch = if (c.hz > 0) "${mhz(c.hz)} MHz${if (c.tdma) " · TDMA S${c.slot + 1}" else if (c.proto == "DMR" || c.proto == "TETRA") " · TS${c.slot + 1}" else ""}$lp"
-        else if (c.lpcn >= 0) "$lpName ${c.lpcn}${if (c.proto == "DMR") " · TS${c.slot + 1}" else ""} · ${if (c.proto == "SMARTNET") "channel plan not proved" else "learning its frequency"}" else "channel not resolved"
+        else if (c.lpcn >= 0) "$lpName ${c.lpcn}${if (c.proto == "DMR") " · TS${c.slot + 1}" else ""} · ${if (c.proto == "SMARTNET") "channel plan not known" else "learning its frequency"}" else "channel not resolved"
+    // a Type II voice channel the radio cannot see from here: the follow goes there when it is the call to hear
+    val away = if (c.proto == "SMARTNET" && c.onAir && c.hz > 0 && (c.hz < s.spanLo || c.hz > s.spanHi) && !following) " · $SN_AWAY" else ""
     val car = if (c.hz > 0) s.carriers.firstOrNull { abs(it.hz - c.hz) < 3_200 && it.callsign.isNotEmpty() } else null
     val note = dispatchAudioNote(c, s.codecs)
     val blink = (now / 500) % 2 == 1L
@@ -806,7 +816,7 @@ private fun OnAirCard(c: CallRow, s: FleetSnap, now: Long, audioOn: Boolean, fol
             }
             Column(Modifier.widthIn(min = d.dp(140f))) {
                 Text("${sys?.label ?: c.sys.ifEmpty { "no control channel" }}${if (c.site.isNotEmpty()) " · SITE ${c.site}" else ""}", color = Palette.muted, fontFamily = Mono, fontSize = d.sp(8.5f), maxLines = 1, overflow = TextOverflow.Ellipsis)
-                Text(ch + if (following) " · FOLLOWING" else "", color = col, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(10f))
+                Text(ch + (if (following) " · FOLLOWING" else "") + away, color = col, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(10f))
             }
             if (car != null) IdChip(car.callsign, now - car.callsignMs)
             if (lock == null && c.sys.isNotEmpty()) ToggleBox("LOCK", false, col) { acts.lock(c.sys, "") }
@@ -958,7 +968,8 @@ private fun SiteBlock(sys: SystemRow, site: SiteRow, s: FleetSnap, now: Long, co
         }
         when (sys.proto) {
             "SMARTNET" -> {
-                FlKv(listOfNotNull(if (site.site >= 0) "CONTROL CHANNEL" to "${site.site}" else null, if (site.time.isNotEmpty()) "" to site.time.uppercase() else null))
+                FlKv(listOfNotNull(if (site.site >= 0) "CONTROL CHANNEL" to "${site.site}" else null))
+                PlanLine(site, col)
                 if (site.lcns.isNotEmpty()) FlChips("CHANNELS", site.lcns.map { "CH ${it.lcn} ${mhz(it.hz)}" to false }, col)
             }
             "NXDN" -> {
@@ -989,6 +1000,67 @@ private fun SiteBlock(sys: SystemRow, site: SiteRow, s: FleetSnap, now: Long, co
             }
         }
     }
+}
+
+private const val SN_NO_PLAN = "Voice can't be followed yet: this system's channel plan isn't known. Learning it from the air, or enter it."
+private const val SN_AWAY = "outside what the radio can see from here; Dispatch tunes there when it is the call to hear"
+private const val SN_PLAN_ERR = "Check the numbers: base and high from 25 to 1300 MHz with high at or above base, spacing from 1 to 100 kHz, and the first channel a whole number, with the last channel no higher than 1023."
+
+/** What a Type II site's channel plan is, or that it is not known yet, with ENTER PLAN when it can be given by hand. */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun PlanLine(site: SiteRow, col: Color) {
+    val p = site.plan ?: return
+    val d = rememberDims()
+    var open by remember { mutableStateOf(false) }
+    val kept = p.how == "entered" || p.how == "learned"
+    FlowRow(horizontalArrangement = Arrangement.spacedBy(d.dp(8f)), verticalArrangement = Arrangement.spacedBy(d.dp(4f)), itemVerticalAlignment = Alignment.CenterVertically) {
+        if (p.text.isNotEmpty()) FlKv(listOf("CHANNEL PLAN" to p.text))
+        else Text(SN_NO_PLAN, color = Palette.hold, fontFamily = Mono, fontSize = d.sp(10f))
+        if (p.text.isEmpty() || kept) ToggleBox("ENTER PLAN", false, col) { open = true }
+    }
+    if (open) PlanDialog(p.ccHz, kept, col) { open = false }
+}
+
+/**
+ * The channel plan of a VHF or UHF Type II system, typed in from its published plan: base and high MHz, the spacing
+ * and the first channel number. Kept for the control channel on [ccHz]; FORGET goes back to learning it from the air.
+ */
+@Composable
+private fun PlanDialog(ccHz: Long, kept: Boolean, accent: Color, close: () -> Unit) {
+    val d = rememberDims()
+    var base by remember { mutableStateOf("") }; var high by remember { mutableStateOf("") }
+    var step by remember { mutableStateOf("") }; var first by remember { mutableStateOf("") }
+    var bad by remember { mutableStateOf(false) }
+    fun num(t: String): Double = t.trim().replace(',', '.').toDoubleOrNull() ?: Double.NaN
+    @Composable
+    fun field(label: String, hint: String, v: String, set: (String) -> Unit) {
+        OutlinedTextField(v, { set(it.take(12)) }, singleLine = true, label = { Text(label, fontFamily = Mono, fontSize = d.sp(10f)) },
+            placeholder = { Text(hint, fontFamily = Mono, color = Palette.muted) },
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal), textStyle = TextStyle(fontFamily = Mono, color = Palette.ink, fontSize = d.sp(14f)),
+            colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = accent, unfocusedBorderColor = Palette.line, cursorColor = accent))
+    }
+    AlertDialog(onDismissRequest = close, containerColor = Palette.surface, titleContentColor = Palette.ink, textContentColor = Palette.ink,
+        title = { Text("CHANNEL PLAN", fontFamily = Mono, fontWeight = FontWeight.Bold) },
+        text = {
+            Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(d.dp(6f))) {
+                Text("Control channel ${mhz(ccHz)} MHz. Enter the system's published plan: channel numbers from the first channel up map to base, base plus one spacing, and so on, up to high.",
+                    fontFamily = Mono, fontSize = d.sp(11f))
+                field("BASE MHz", "453.0125", base) { base = it }
+                field("HIGH MHz", "453.9875", high) { high = it }
+                field("SPACING kHz", "12.5", step) { step = it }
+                field("FIRST CHANNEL", "0", first) { first = it }
+                if (bad) Text(SN_PLAN_ERR, color = Palette.danger, fontFamily = Mono, fontSize = d.sp(10f))
+            }
+        },
+        confirmButton = { TextButton({
+            val plan = SmartNet.enteredPlan(num(base), num(high), num(step), num(first))
+            if (plan == null) bad = true else { Dispatch.setPlan(ccHz, plan); close() }
+        }) { Text("SAVE", color = accent, fontFamily = Mono) } },
+        dismissButton = { Row {
+            if (kept) TextButton({ Dispatch.setPlan(ccHz, null); close() }) { Text("FORGET", color = Palette.muted, fontFamily = Mono) }
+            TextButton(close) { Text("CANCEL", color = Palette.muted, fontFamily = Mono) }
+        } })
 }
 
 @OptIn(ExperimentalLayoutApi::class)

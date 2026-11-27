@@ -77,6 +77,8 @@ private const val RECHECK_MS = 300_000L
 /** When the span has more carriers than channels, this many channels stay free for turns while new carriers wait (one after). */
 private const val TURN_CHANNELS = 2
 private const val LIVE_MS = 4_000L
+/** A carrier back after this long off the air has keyed up (a Type II voice channel taking a call). */
+private const val KEYUP_GAP_MS = 2_000L
 private const val KNOWN_UNITS = 3000
 
 data class CarrierRow(
@@ -95,7 +97,10 @@ data class SiteRow(
     val key: String, val label: String, val rfss: Int, val site: Int, val nac: Int, val ccHz: List<Long>, val lastMs: Long, val levelDb: Double,
     val neighbors: List<Neighbor>, val secondary: List<Pair<Long, String>>, val time: String, val callsign: String, val carriers: List<Long>,
     val lcns: List<Lcn>, val rest: Int, val busy: List<Int>, val idens: List<Iden>, val units: Int, val lra: Int, val cls: Int,
+    /** Motorola Type II: the channel plan in use ("" none), how it is known ("proved", "entered", "learned", ""), and the control channel it is kept under. */
+    val plan: SitePlan? = null,
 )
+data class SitePlan(val text: String, val how: String, val ccHz: Long)
 data class SystemRow(
     val key: String, val proto: String, val color: Int, val label: String, val wacn: Int, val sysId: Int, val cc: Int, val fid: Int,
     val net: Int, val model: String, val callsign: String, val firstMs: Long, val lastMs: Long, val sites: List<SiteRow>, val idens: List<Iden>,
@@ -144,12 +149,17 @@ data class UnitDetail(val key: String, val reports: List<UnitReport>, val trail:
 data class KnownSystem(val key: String, val proto: String, val wacn: Int, val sysId: Int, val cc: Int, val fid: Int, val net: Int, val model: String,
                        val firstMs: Long, val lastMs: Long, val derived: Boolean, val hz: List<Long>)
 data class KnownUnit(val sys: String, val id: Int, val lat: Double, val lon: Double, val posMs: Long, val verified: Boolean, val firstMs: Long, val lastMs: Long)
-data class KnownState(val v: Int, val systems: List<KnownSystem>, val units: List<KnownUnit>) {
+/** A Motorola Type II channel plan entered or learned, kept under its control channel's frequency. */
+data class KnownPlan(val kind: String, val base: Long, val high: Long, val step: Long, val first: Int, val hz: Long) {
+    fun custom() = SmartNet.Custom(kind, base, high, step, first)
+}
+data class KnownState(val v: Int, val systems: List<KnownSystem>, val units: List<KnownUnit>, val plans: List<KnownPlan> = emptyList()) {
     fun toJson(): JSONObject = JSONObject().put("v", v)
         .put("systems", JSONArray(systems.map { s -> JSONObject().put("key", s.key).put("proto", s.proto).put("wacn", s.wacn).put("sysId", s.sysId).put("cc", s.cc).put("fid", s.fid)
             .put("net", s.net).put("model", s.model).put("firstMs", s.firstMs).put("lastMs", s.lastMs).put("derived", s.derived).put("hz", JSONArray(s.hz)) }))
         .put("units", JSONArray(units.map { u -> JSONObject().put("sys", u.sys).put("id", u.id).put("lat", u.lat).put("lon", u.lon).put("posMs", u.posMs).put("verified", u.verified)
             .put("firstMs", u.firstMs).put("lastMs", u.lastMs) }))
+        .put("plans", JSONArray(plans.map { p -> JSONObject().put("kind", p.kind).put("base", p.base).put("high", p.high).put("step", p.step).put("first", p.first).put("hz", p.hz) }))
     companion object {
         fun fromJson(o: JSONObject?): KnownState? {
             if (o == null || o.optInt("v") != 1) return null
@@ -161,7 +171,11 @@ data class KnownState(val v: Int, val systems: List<KnownSystem>, val units: Lis
             val units = (0 until us.length()).mapNotNull { i -> us.optJSONObject(i)?.let { u ->
                 KnownUnit(u.optString("sys"), u.optInt("id"), u.optDouble("lat"), u.optDouble("lon"), u.optLong("posMs"), u.optBoolean("verified"), u.optLong("firstMs"), u.optLong("lastMs")) } }
                 .filter { it.lat.isFinite() && it.lon.isFinite() }
-            return KnownState(1, systems, units)
+            val ps = o.optJSONArray("plans") ?: JSONArray()
+            val plans = (0 until ps.length()).mapNotNull { i -> ps.optJSONObject(i)?.let { p ->
+                KnownPlan(p.optString("kind"), p.optLong("base"), p.optLong("high"), p.optLong("step"), p.optInt("first"), p.optLong("hz")) } }
+                .filter { (it.kind == "entered" || it.kind == "learned") && it.step > 0 && it.high >= it.base && it.first >= 0 }
+            return KnownState(1, systems, units, plans)
         }
     }
 }
@@ -173,7 +187,10 @@ private class Carrier(val key: Long, val hz: Long, now: Long) {
     var envCv = 0.0; var eye = 0.0; var decoding = false; var callsign = ""; var callsignMs = 0L; var tdma = false; var lcn = ""
     var ident = ""; var identMs = 0L; var identEmergency = false
     var hdr: Hdr? = null; var lastAuditionMs = 0L
-    /** Motorola Type II: the channel number the control channel announces for itself, and the plan that number proved. */
+    /**
+     * Motorola Type II: the channel number the control channel announces for itself, the plan in use (null until one is
+     * known), the radio's error that plan measured (heard minus plan, added to every channel), and how the plan is known.
+     */
     var osw: OswCc? = null
     /** Turns the carrier has had on a channel, and its level at the last. */
     var turns = 0; var turnDb = 0.0
@@ -186,9 +203,9 @@ private class Carrier(val key: Long, val hz: Long, now: Long) {
     fun row() = CarrierRow(key, hz, levelDb, peakDb, firstMs, lastMs, onMs, heardMs, cls, role, sys, nac, cc, frames, blocks, crcOk, lastDecodeMs, envCv, eye,
         decoding, callsign, tdma, lcn, callsignMs, ident, identMs, identEmergency)
 }
-private class OswCc(val cc: Int, val plan: SmartNet.Plan?)
-/** Motorola Type II: the channel plan its control channel proved (null until one does), and the channels granted (count). */
-private class OswSys { var plan: SmartNet.Plan? = null; val chans = LinkedHashMap<Int, Int>() }
+private class OswCc(val cc: Int) { var plan: SmartNet.Plan? = null; var offset = 0L; var how = "" }
+/** Motorola Type II: the channels granted (count). Each control channel has its own plan (Carrier.osw). */
+private class OswSys { val chans = LinkedHashMap<Int, Int>() }
 private class NxdnD { var src = 0; var dst = -1; var group = true; var cipher = -1; var keyId = 0; var ms = 0L }
 /** An NXDN message as a unit's report shows it. */
 private class NxdnUnitMsg(val hex: String, val line: String)
@@ -559,10 +576,13 @@ class FleetProcessor(private val log: PacketLog?) : IqProcessor {
             val c = carrierAt(if (abs(hz - key) < 1_500) key.toDouble() else Math.round(hz / 100) * 100.0)
             val fresh = carriers.size > n0
             seen.add(c.key)
+            // a carrier coming up after two seconds or more off the air: a Type II grant just before it may name its channel
+            val keyed = fresh || now - c.lastMs >= KEYUP_GAP_MS
             if (fresh) { c.levelDb = db; c.peakDb = db }
             if (now - c.lastMs < 2_000) c.onMs += now - c.lastMs
             c.lastMs = now; c.levelDb = Math.round(db * 10) / 10.0; c.peakDb = max(c.peakDb, c.levelDb)
             chans[c.key]?.hz = hz
+            if (keyed && oswLearners.isNotEmpty() && c.role != "control" && c.role != "rest") oswKeyUp(hz, now)
         }
         for (c in carriers.values) if (c.key !in seen && inSpan(c.hz) && now - c.lastMs > 1_000) chans[c.key]?.cw?.end()
         pending = true
@@ -1201,6 +1221,7 @@ class FleetProcessor(private val log: PacketLog?) : IqProcessor {
         }
         c.frames++; c.blocks = rx.expected; c.crcOk = rx.good; c.lastDecodeMs = now; blocks++
         val p = oswParsers.getOrPut(c.key) { OswParser() }
+        p.upper800 = c.osw?.plan?.id?.startsWith("800") == true
         val ev = if (gap > 1) p.lost() else ArrayList()
         ev.addAll(p.push(o))
         for (e in ev) oswEvent(c, e, now)
@@ -1218,10 +1239,9 @@ class FleetProcessor(private val log: PacketLog?) : IqProcessor {
         fun log(name: String, text: String) = addLog(LogRow(now, c.hz, "TYPE II", name, text, hexw, true))
         if (e.kind == "sysid") {
             val s = oswSys(e.sys, now); c.sys = s.key; s.heardHz.add(c.key)
-            val plan = SmartNet.provePlan(e.cc, c.hz)
-            c.osw = OswCc(e.cc, plan)
-            if (plan != null && s.osw!!.plan == null) s.osw!!.plan = plan
-            log("SYSTEM ID", "SYSTEM ${hx(e.sys, 4)} · CONTROL CHANNEL ${e.cc}${if (plan != null) " · ${plan.label}" else " · no channel plan puts that number on this frequency"}")
+            val o = OswCc(e.cc); c.osw = o
+            oswResolve(c)
+            log("SYSTEM ID", "SYSTEM ${hx(e.sys, 4)} · CONTROL CHANNEL ${e.cc}${if (o.plan != null) " · ${oswPlanText(c)}" else " · no channel plan puts that number on this frequency"}")
             pending = true
             return
         }
@@ -1233,7 +1253,9 @@ class FleetProcessor(private val log: PacketLog?) : IqProcessor {
             val so = s?.osw
             if (s == null || so == null) { log(name, "$who · CH ${e.ch} · system ID not heard yet"); return }
             s.lastMs = now
-            val plan = so.plan; val hz = plan?.hz?.invoke(e.ch) ?: 0L
+            val hz = oswHz(c, e.ch, now)
+            // no plan yet: the grant may teach one, from the carrier that keys up after it
+            if (hz == 0L && c.osw != null && c.osw?.plan == null && e.kind == "grant") oswLearner(c).grant(e.ch, now)
             so.chans[e.ch] = (so.chans[e.ch] ?: 0) + 1
             val site = oswSiteLabel(c)
             grant(s.key, GrantRow(now, now, s.key, if (e.kind == "grant") "grant" else "update", tg, e.group, if (e.kind == "grant") e.src else 0, "CH ${e.ch}", hz, 0, false, false, false, c.hz, site, e.ch), e.kind == "update")
@@ -1245,6 +1267,68 @@ class FleetProcessor(private val log: PacketLog?) : IqProcessor {
         log("OSW ${e.words.joinToString("+") { hx(it.cmd, 3) }}", "not read · ${e.words.joinToString(" / ") { SmartNet.wordText(it) }}")
     }
     private fun oswSiteLabel(c: Carrier): String { val o = c.osw; return if (o != null) "channel ${o.cc}" else "${"%.4f".format(java.util.Locale.US, c.hz / 1e6)} MHz" }
+    /** Type II plans entered or learned, by control channel frequency (to 100 Hz), and the learners still at work. */
+    private val oswStore = LinkedHashMap<Long, KnownPlan>()
+    private val oswLearners = LinkedHashMap<Long, OswLearner>()
+    private fun oswLearner(c: Carrier): OswLearner = oswLearners.getOrPut(c.key) { OswLearner() }
+    /** The plan kept for a control channel heard on [hz]: the nearest within [SmartNet.PLAN_TOL_HZ]. */
+    private fun oswStored(hz: Long): KnownPlan? {
+        var best: KnownPlan? = null
+        for (p in oswStore.values) if (abs(p.hz - hz) <= SmartNet.PLAN_TOL_HZ && (best == null || abs(p.hz - hz) < abs(best.hz - hz))) best = p
+        return best
+    }
+    /** A control channel's plan: one entered wins, then a published plan its own number proves, then one learned. */
+    private fun oswResolve(c: Carrier) {
+        val o = c.osw ?: return
+        val st = oswStored(c.hz)
+        o.plan = null; o.offset = 0; o.how = ""
+        if (st?.kind == "entered") { val p = SmartNet.customPlan(st.custom()); o.plan = p; o.offset = SmartNet.fitPlan(o.cc, c.hz, listOf(p))?.offset ?: 0L; o.how = "entered"; return }
+        val f = SmartNet.fitPlan(o.cc, c.hz)
+        if (f != null) { o.plan = f.plan; o.offset = f.offset; o.how = "proved"; return }
+        if (st != null) { o.plan = SmartNet.customPlan(st.custom()); o.how = "learned" }
+    }
+    /** The plan in use as text: "800 MHz standard, radio 2.1 kHz high", "learned: 453.0125 + 12.5 kHz". */
+    private fun oswPlanText(c: Carrier): String { val o = c.osw; val p = o?.plan ?: return ""; return listOf(p.label, SmartNet.offsetText(o.offset)).filter { it.isNotEmpty() }.joinToString(", ") }
+    /**
+     * Where a channel granted on a control channel is: its plan's frequency with the radio's error added, moved onto a
+     * live carrier within [SmartNet.PLAN_TOL_HZ] (not a control channel) when there is one. 0 when no plan is known.
+     */
+    private fun oswHz(c: Carrier, ch: Int, now: Long): Long {
+        val o = c.osw ?: return 0L; val p = o.plan?.hz?.invoke(ch) ?: 0L
+        if (p == 0L) return 0L
+        val hz = p + o.offset
+        var best: Carrier? = null
+        for (x in carriers.values) {
+            if (x.role == "control" || x.role == "rest" || now - x.lastMs >= LIVE_MS || abs(x.hz - hz) > SmartNet.PLAN_TOL_HZ) continue
+            if (best == null || abs(x.hz - hz) < abs(best.hz - hz)) best = x
+        }
+        return best?.hz ?: hz
+    }
+    /** A carrier keyed up at [hz]: every control channel learning its plan hears of it. */
+    private fun oswKeyUp(hz: Double, now: Long) {
+        for ((k, l) in oswLearners) {
+            if (!l.keyUp(hz, now)) continue
+            val cc = carriers[k] ?: continue; val x = l.custom() ?: continue
+            val key = Math.round(cc.hz / 100.0) * 100
+            oswStore[key] = KnownPlan(x.kind, x.base, x.high, x.step, x.first, key)
+            for (c in carriers.values) if (c.osw != null && abs(c.hz - cc.hz) <= SmartNet.PLAN_TOL_HZ) oswResolve(c)
+            addLog(LogRow(now, cc.hz, "TYPE II", "CHANNEL PLAN", "channel plan learned from the air · ${oswPlanText(cc)}", "", true))
+            pending = true
+        }
+    }
+    /**
+     * A plan for the control channel on [ccHz] entered by hand (it wins over every other), or null to forget the one
+     * entered or learned there and learn again.
+     */
+    @Synchronized fun setOswPlan(ccHz: Long, x: SmartNet.Custom?) {
+        oswStore.entries.removeAll { abs(it.value.hz - ccHz) <= SmartNet.PLAN_TOL_HZ }
+        val key = Math.round(ccHz / 100.0) * 100
+        if (x != null) oswStore[key] = KnownPlan("entered", x.base, x.high, x.step, x.first, key)
+        for (c in carriers.values) if (abs(c.hz - ccHz) <= SmartNet.PLAN_TOL_HZ) { oswLearners.remove(c.key); oswResolve(c) }
+        post(true)
+    }
+    /** A carrier keyed up at [hz] at [ms] (the tests' synthetic carriers). */
+    @Synchronized fun feedKeyUp(hz: Long, ms: Long) = oswKeyUp(hz.toDouble(), ms)
     /** A Type II voice channel: analog FM voice to the call on the air there. */
     private fun fmOn(c: Carrier, ch: Chan) {
         if (ch.fm != null) return
@@ -1253,12 +1337,13 @@ class FleetProcessor(private val log: PacketLog?) : IqProcessor {
     }
     private fun oswSites(s: Sys): List<SiteRow> {
         val cs = carriers.values.filter { it.sys == s.key && it.cls == "MOTOROLA TYPE II" }
-        val plan = s.osw?.plan
-        val lcns = if (plan != null) (s.osw?.chans?.keys ?: emptySet()).sorted().map { Lcn(it, plan.hz(it), 0) } else emptyList()
+        val chans = (s.osw?.chans?.keys ?: emptySet()).sorted()
         return cs.map { c ->
-            val o = c.osw
+            val o = c.osw; val plan = o?.plan; val text = oswPlanText(c)
+            val lcns = if (o != null && plan != null) chans.map { Lcn(it, plan.hz(it).let { h -> if (h != 0L) h + o.offset else 0L }, 0) }.filter { it.hz > 0 } else emptyList()
             SiteRow("${s.key}/${c.key}", oswSiteLabel(c), -1, o?.cc ?: -1, -1, listOf(c.hz), c.lastMs, c.levelDb, emptyList(), emptyList(),
-                if (o != null) (o.plan?.label ?: "channel plan not proved") else "", c.callsign, listOf(c.key), lcns, -1, emptyList(), emptyList(), 0, -1, -1)
+                if (o != null) text.ifEmpty { "channel plan not known" } else "", c.callsign, listOf(c.key), lcns, -1, emptyList(), emptyList(), 0, -1, -1,
+                SitePlan(text, o?.how ?: "", c.hz))
         }
     }
     private fun classify(c: Carrier, ch: Chan, now: Long) {
@@ -1947,7 +2032,7 @@ class FleetProcessor(private val log: PacketLog?) : IqProcessor {
         val us = ArrayList<KnownUnit>()
         for (u in units.values) { val (lat, lon) = resolvePos(u); if (lat != null && lon != null) us.add(KnownUnit(u.sys, u.id, lat, lon, u.posMs, u.posVerified, u.firstMs, u.lastMs)) }
         us.sortByDescending { it.posMs }
-        return KnownState(1, ss, us.take(KNOWN_UNITS))
+        return KnownState(1, ss, us.take(KNOWN_UNITS), oswStore.values.toList())
     }
     @Synchronized fun restore(k: KnownState?) {
         if (k == null || k.v != 1) return
@@ -1960,6 +2045,12 @@ class FleetProcessor(private val log: PacketLog?) : IqProcessor {
             val u = units.getOrPut(key) { UnitRec(key, x.sys, x.id, x.firstMs, x.lastMs).also { it.posMs = x.posMs; it.posVerified = x.verified; it.trail.add(TrailPt(x.lat, x.lon, x.posMs)) } }
             if (u.lonLo < 0 && x.posMs >= u.posMs) { u.fix = x.lat to x.lon; u.posMs = x.posMs; u.posVerified = x.verified }
         }
+        for (p in k.plans) {
+            if ((p.kind != "entered" && p.kind != "learned") || p.step <= 0 || p.high < p.base) continue
+            val key = Math.round(p.hz / 100.0) * 100
+            oswStore[key] = p.copy(hz = key)
+        }
+        for (c in carriers.values) oswResolve(c)
         post(true)
     }
     /** The receiver's position arrived or moved: every stored report is resolved against it again. */
@@ -2202,7 +2293,7 @@ class FleetProcessor(private val log: PacketLog?) : IqProcessor {
     }
     @Synchronized fun clear() {
         carriers.clear(); systems.clear(); sites.clear(); units.clear(); anchorsDirty = true; embAsm.clear(); aliases.clear(); unitAlias.clear(); tgs.clear(); grants = ArrayList(); logRows.clear(); logSeen.clear()
-        chans.clear(); bbFir.clear(); blocks = 0; colorNext = 0; calls.clear(); pendingGrants = ArrayList(); nxdnPending = ArrayList(); oswParsers.clear(); pdus.clear()
+        chans.clear(); bbFir.clear(); blocks = 0; colorNext = 0; calls.clear(); pendingGrants = ArrayList(); nxdnPending = ArrayList(); oswParsers.clear(); oswLearners.clear(); pdus.clear()
         post(true)
     }
 

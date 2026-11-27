@@ -42,7 +42,8 @@ object SmartNet {
     /** The talkgroup of a group address (its low four bits are status bits), and those status bits. */
     fun tgOf(addr: Int): Int = addr and 0xfff0
     fun tgStatus(addr: Int): Int = addr and 0xf
-    fun isChannel(cmd: Int): Boolean = cmd < 0x2f8
+    /** A channel number, not a command. [upper800]: also the channel numbers above 0x2F7 that 800 MHz plans use (0x32F-0x33F, 0x3BE, 0x3C1-0x3FE): on other bands those are commands. Live traffic puts the commands in the gaps between them (0x308-0x32E, 0x340, 0x3A0, 0x3BF, 0x3C0). */
+    fun isChannel(cmd: Int, upper800: Boolean = false): Boolean = cmd < 0x2f8 || (upper800 && (cmd in 0x32f..0x33f || cmd == 0x3be || cmd in 0x3c1..0x3fe))
 
     /** The 10-bit check of 27 data bits (as sent: before the inversion is undone). */
     fun crc(v: Int): Int {
@@ -100,20 +101,149 @@ object SmartNet {
 
     /** The channel plans a Type II channel number can be on, by band. */
     class Plan(val id: String, val label: String, val hz: (Int) -> Long)
+    /** Channel ranges (first, last, Hz of the first, step): a later range wins where two overlap. */
+    private class Range(val a: Int, val b: Int, val base: Long, val step: Long)
+    private fun table(rs: List<Range>): (Int) -> Long = { ch ->
+        var out = 0L
+        for (i in rs.indices.reversed()) { val r = rs[i]; if (ch >= r.a && ch <= r.b) { out = r.base + r.step * (ch - r.a); break } }
+        out
+    }
+    /** The ranges every 800 MHz plan shares, over its own (trunk-recorder's smartnet_parser get_freq). */
+    private val TOP_800 = listOf(Range(0x2d0, 0x2f7, 866_000_000L, 25_000L), Range(0x32f, 0x33f, 867_000_000L, 25_000L), Range(0x3c1, 0x3fe, 867_425_000L, 25_000L), Range(0x3be, 0x3be, 868_975_000L, 0L))
     val PLANS = listOf(
-        Plan("900", "900 MHz (935.0125 + 12.5 kHz steps)") { ch -> if (ch <= 0x1df) 935_012_500L + 12_500L * ch else 0L },
-        Plan("800", "800 MHz (851.0125 + 25 kHz steps)") { ch -> if (ch <= 0x2cf) 851_012_500L + 25_000L * ch else 0L },
-        Plan("800S", "800 MHz splinter (851.000 + 25 kHz steps)") { ch -> if (ch <= 0x2cf) 851_000_000L + 25_000L * ch else 0L },
+        Plan("900", "900 MHz", table(listOf(Range(0, 0x1df, 935_012_500L, 12_500L)))),
+        Plan("800", "800 MHz standard", table(listOf(Range(0, 0x2cf, 851_012_500L, 25_000L)) + TOP_800)),
+        Plan("800S", "800 MHz splinter", table(listOf(Range(0, 0x257, 851_000_000L, 25_000L), Range(0x258, 0x2cf, 866_012_500L, 25_000L)) + TOP_800)),
+        Plan("800R", "800 MHz rebanded", table(listOf(Range(0, 0x1b7, 851_012_500L, 25_000L), Range(0x1b8, 0x22f, 851_025_000L, 25_000L)) + TOP_800)),
     )
     /**
-     * The plan a control channel proves: the one that puts the channel number the site announces for its own control
-     * channel on the frequency it is heard on (within 1.5 kHz), when exactly one plan does. Otherwise null, and grants are
-     * shown by channel number.
+     * How far a control channel may be heard from where a plan puts it and still prove that plan: a radio's own frequency
+     * error is a few kHz, and the two closest plans (800 standard and splinter) are 12.5 kHz apart.
      */
-    fun provePlan(ccNumber: Int, heardHz: Long): Plan? {
-        val hits = PLANS.filter { p -> val hz = p.hz(ccNumber); hz > 0 && abs(hz - heardHz) < 1_500 }
-        return if (hits.size == 1) hits[0] else null
+    const val PLAN_TOL_HZ = 5_000L
+    class Fit(val plan: Plan, val offset: Long)
+    /**
+     * The plan a control channel proves: the one that puts the channel number the site announces for its own control
+     * channel nearest the frequency it is heard on, within [PLAN_TOL_HZ], and the radio's error there (heard minus plan).
+     * Plans that put the number on the same frequency agree (the first listed stands); two at the same distance on
+     * different frequencies prove nothing. Null when none fits, and grants are shown by channel number.
+     */
+    fun fitPlan(ccNumber: Int, heardHz: Long, plans: List<Plan> = PLANS): Fit? {
+        class Hit(val plan: Plan, val hz: Long, val d: Long)
+        val hits = ArrayList<Hit>()
+        for (p in plans) {
+            val hz = p.hz(ccNumber); val d = abs(heardHz - hz)
+            if (hz > 0 && d <= PLAN_TOL_HZ && hits.none { it.hz == hz }) hits.add(Hit(p, hz, d))
+        }
+        if (hits.isEmpty()) return null
+        hits.sortBy { it.d }
+        if (hits.size > 1 && hits[1].d == hits[0].d) return null
+        return Fit(hits[0].plan, heardHz - hits[0].hz)
     }
+    fun provePlan(ccNumber: Int, heardHz: Long): Plan? = fitPlan(ccNumber, heardHz)?.plan
+
+    /** Frequency text: MHz to four places, five when the fifth is not zero (6.25 kHz steps). */
+    fun mhz(hz: Long): String { val s = String.format(java.util.Locale.US, "%.5f", Math.round(hz / 10.0) / 1e5); return if (s.endsWith("0")) s.dropLast(1) else s }
+    /** kHz text with no trailing zeros: 12.5, 6.25, 25. */
+    fun khz(hz: Long): String { val s = String.format(java.util.Locale.US, "%.3f", hz / 1000.0).trimEnd('0'); return s.trimEnd('.') }
+    /**
+     * A plan given by hand or learned from the air, like trunk-recorder's 400_custom: channels [first] to
+     * [first] + (high - base) / step are base + step * (channel - first). Learned plans start at channel 0 and cover all.
+     */
+    data class Custom(val kind: String, val base: Long, val high: Long, val step: Long, val first: Int)
+    fun customPlan(x: Custom): Plan {
+        val n = Math.floor((x.high - x.base).toDouble() / x.step + 1e-6).toLong()
+        return Plan(x.kind, "${x.kind}: ${mhz(x.base)} + ${khz(x.step)} kHz") { ch -> if (ch >= x.first && ch <= x.first + n) x.base + x.step * (ch - x.first) else 0L }
+    }
+    /** The highest channel number a Type II word carries (ten bits). */
+    const val MAX_CH = 0x3ff
+    /**
+     * A plan typed in (base MHz, high MHz, spacing kHz, first channel), or null when a number is out of range: base and
+     * high 25 to 1300 MHz with high at or above base, spacing 1 to 100 kHz, the first channel a whole number and the last
+     * no higher than [MAX_CH].
+     */
+    fun enteredPlan(baseMhz: Double, highMhz: Double, spacingKhz: Double, first: Double): Custom? {
+        if (!listOf(baseMhz, highMhz, spacingKhz, first).all { it.isFinite() }) return null
+        if (baseMhz < 25 || baseMhz > 1300 || highMhz < baseMhz || highMhz > 1300 || spacingKhz < 1 || spacingKhz > 100) return null
+        if (first < 0 || Math.floor(first) != first) return null
+        val base = Math.round(baseMhz * 1e6); val high = Math.round(highMhz * 1e6); val step = Math.round(spacingKhz * 1000)
+        if (first + Math.floor((high - base).toDouble() / step + 1e-6) > MAX_CH) return null
+        return Custom("entered", base, high, step, first.toInt())
+    }
+    /** The radio's error as text ('' under 0.1 kHz): "radio 2.1 kHz high". */
+    fun offsetText(offset: Long): String {
+        val k = Math.round(abs(offset) / 100.0) / 10.0
+        return if (k < 0.1) "" else "radio ${String.format(java.util.Locale.US, "%.1f", k)} kHz ${if (offset > 0) "high" else "low"}"
+    }
+}
+
+/** A grant and a carrier keying up within this long are one call's start. */
+const val LEARN_WINDOW_MS = 1_500L
+/** Sightings of a channel on one frequency before it counts. */
+const val LEARN_SIGHTINGS = 3
+/** The channel steps a learned plan may have, and how close the one measured must come. */
+val LEARN_STEPS = longArrayOf(5_000, 6_250, 7_500, 12_500, 25_000)
+private const val LEARN_STEP_TOL = 300.0
+
+/**
+ * A Type II system's channel plan learned from the air, for a control channel no published plan fits (VHF and UHF
+ * systems): a grant for channel N followed within [LEARN_WINDOW_MS] by a carrier keying up in the span is a sighting
+ * of N there. A channel seen [LEARN_SIGHTINGS] times on the same frequency (within [SmartNet.PLAN_TOL_HZ]) is trusted;
+ * two trusted channels give the step (one of [LEARN_STEPS]) and with it every channel. A trusted channel that gives no
+ * such step with any other is dropped. The same as the web app's OswLearner.
+ */
+class OswLearner {
+    private class Grant(val ch: Int, val ms: Long)
+    class Pin(var hz: Double, var n: Int)
+    class Trusted(val ch: Int, val hz: Double, val n: Int)
+    class Learned(val base: Long, val step: Long)
+    private var grants = ArrayList<Grant>()
+    /** Sightings per channel: frequencies (averaged) and how many times each. */
+    val pins = LinkedHashMap<Int, MutableList<Pin>>()
+    /** Hz of channel 0 and the step, once learned. */
+    var plan: Learned? = null; private set
+    fun grant(ch: Int, ms: Long) {
+        if (plan != null) return
+        grants = ArrayList(grants.filter { ms - it.ms <= LEARN_WINDOW_MS && it.ch != ch })
+        grants.add(Grant(ch, ms))
+    }
+    /** A carrier keyed up at [hz]: true when that taught the plan. */
+    fun keyUp(hz: Double, ms: Long): Boolean {
+        if (plan != null) return false
+        val g = grants.filter { ms >= it.ms && ms - it.ms <= LEARN_WINDOW_MS }
+        // two channels granted together: which one keyed up is not known
+        if (g.size != 1) return false
+        grants.remove(g[0])
+        return sight(g[0].ch, hz)
+    }
+    fun sight(ch: Int, hz: Double): Boolean {
+        if (plan != null) return false
+        val list = pins.getOrPut(ch) { ArrayList() }
+        var p = list.find { abs(it.hz - hz) <= SmartNet.PLAN_TOL_HZ }
+        if (p != null) { p.hz = (p.hz * p.n + hz) / (p.n + 1); p.n++ } else { p = Pin(hz, 1); list.add(p) }
+        return if (p.n == LEARN_SIGHTINGS) solve(ch, p) else false
+    }
+    /** Each channel's most seen frequency, once seen [LEARN_SIGHTINGS] times. */
+    fun trusted(): List<Trusted> {
+        val out = ArrayList<Trusted>()
+        for ((ch, list) in pins) { val b = list.maxByOrNull { it.n }; if (b != null && b.n >= LEARN_SIGHTINGS) out.add(Trusted(ch, b.hz, b.n)) }
+        return out.sortedWith(compareBy<Trusted>({ -it.n }, { it.ch }))
+    }
+    private fun solve(ch: Int, p: Pin): Boolean {
+        val all = trusted(); val others = all.filter { it.ch != ch }
+        if (others.isEmpty()) return false
+        for (o in others) {
+            val raw = (p.hz - o.hz) / (ch - o.ch); val step = LEARN_STEPS.firstOrNull { abs(raw - it) <= LEARN_STEP_TOL } ?: continue
+            val base = ((p.hz - step * ch) + (o.hz - step * o.ch)) / 2
+            if (base <= 0 || !all.all { abs(base + step * it.ch - it.hz) <= SmartNet.PLAN_TOL_HZ }) continue
+            plan = Learned(Math.round(base), step)
+            return true
+        }
+        pins[ch]?.remove(p)
+        return false
+    }
+    /** The plan learned, as a plan over every channel number. */
+    fun custom(): SmartNet.Custom? = plan?.let { SmartNet.Custom("learned", it.base, it.base + it.step * SmartNet.MAX_CH, it.step, 0) }
 }
 
 /**
@@ -168,6 +298,8 @@ class OswEvent(val kind: String, val words: List<Osw>, val sys: Int = 0, val cc:
 
 /** OSWs in the order sent to messages: a 0x308 waits for the word after it. A failed frame between breaks a pair. */
 class OswParser {
+    /** The control channel proved an 800 MHz plan: its upper channel numbers are channels. */
+    var upper800 = false
     private var first: Osw? = null
     /** A frame failed its check: a 0x308 waiting for its second word is dropped. */
     fun lost(): MutableList<OswEvent> { val f = first; first = null; return if (f != null) mutableListOf(OswEvent("other", listOf(f))) else mutableListOf() }
@@ -177,11 +309,11 @@ class OswParser {
         val f = first; first = null
         if (f != null) {
             if (o.cmd == 0x30b && (o.addr and 0xfc00) == 0x2800) out.add(OswEvent("sysid", listOf(f, o), sys = f.addr, cc = o.addr and 0x3ff))
-            else if (SmartNet.isChannel(o.cmd)) out.add(OswEvent("grant", listOf(f, o), src = f.addr, tg = o.addr, group = SmartNet.group(o), ch = o.cmd))
+            else if (SmartNet.isChannel(o.cmd, upper800)) out.add(OswEvent("grant", listOf(f, o), src = f.addr, tg = o.addr, group = SmartNet.group(o), ch = o.cmd))
             else out.add(OswEvent("other", listOf(f, o)))
             return out
         }
-        if (SmartNet.isChannel(o.cmd)) out.add(OswEvent("update", listOf(o), tg = o.addr, group = SmartNet.group(o), ch = o.cmd))
+        if (SmartNet.isChannel(o.cmd, upper800)) out.add(OswEvent("update", listOf(o), tg = o.addr, group = SmartNet.group(o), ch = o.cmd))
         else if (o.cmd == 0x2f8) out.add(OswEvent("idle", listOf(o)))
         else out.add(OswEvent("other", listOf(o)))
         return out
