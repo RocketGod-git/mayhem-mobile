@@ -398,6 +398,8 @@ drainPort.port1.onmessage = () => {
   while (queue.length && performance.now() - t0 < 8) process(queue.shift()!);
   armDrain();
 };
+/** The page is hidden: the waterfall is not drawn, so it is barely computed. */
+let bgHidden = false;
 /** A frequency correction measurement under way (RADIO panel, MEASURE). */
 let meter: CarrierMeter | null = null;
 function armDrain(): void { if (!drainArmed && queue.length) { drainArmed = true; drainPort.port2.postMessage(0); } }
@@ -427,6 +429,7 @@ self.onmessage = (e: MessageEvent) => {
       if (processor === lora && typeof m.rate === 'number' && m.rate !== rate) dropQueued();
       if (processor === lora && typeof m.centreHz === 'number' && m.centreHz !== centreHz) { dropQueued(); lora.gap(0); }
       if (typeof m.rate === 'number') rate = m.rate;
+      if (typeof m.hidden === 'boolean') bgHidden = m.hidden;
       if (typeof m.specBins === 'number') setSpecBins(m.specBins);
       if (typeof m.centreHz === 'number') { centreHz = m.centreHz; if (processor === sonde) sonde.setCenter(centreHz); }
       // The channel being demodulated is the span center plus the offset, not the span center.
@@ -603,13 +606,15 @@ function process(iq: Int8Array): void {
   // accumulate every whole FFT frame in this buffer (a short buffer contributes one zero-padded frame)
   // wide spans (up to 20 Msps) would need ten times the transforms: skip frames so ~2.4 M samples/s are transformed
   const skip = Math.max(1, Math.round(rate / 2_400_000));
-  if (nSamp >= fftN) { for (let off = 0; off + fftN <= nSamp; off += fftN * skip) { loadIqAt(iq, off, fre, fim, win); fft(fre, fim); accumulatePower(fre, fim, acc); frames++; } }
+  // a hidden tab draws no waterfall: one spectrum a second keeps the health line and peaks, the rest of the CPU goes to the radio
+  const specMs = bgHidden ? 1_000 : SPEC_INTERVAL_MS, wantSpec = !bgHidden || now - lastSpec > specMs - 120;
+  if (!wantSpec) { /* nothing transformed */ } else if (nSamp >= fftN) { for (let off = 0; off + fftN <= nSamp; off += fftN * skip) { loadIqAt(iq, off, fre, fim, win); fft(fre, fim); accumulatePower(fre, fim, acc); frames++; } }
   else if (frames === 0) {
     fre.fill(0); fim.fill(0);
     for (let k = 0; k < nSamp; k++) { fre[k] = iq[2 * k] * win[k]; fim[k] = iq[2 * k + 1] * win[k]; }
     fft(fre, fim); accumulatePower(fre, fim, acc); frames = 1;
   }
-  if (now - lastSpec > SPEC_INTERVAL_MS && frames > 0) {
+  if (now - lastSpec > specMs && frames > 0) {
     lastSpec = now;
     const nAvg = frames;
     powerDbFrom(acc, nAvg, pdb);

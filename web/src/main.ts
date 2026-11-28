@@ -10983,7 +10983,7 @@ function ensureWorker(): Worker {
         if (state.app === 'audio') { const db = channelOverNoise(m.bins as Float32Array, m.rangeDb as number); setMeter(db / 40, `+${Math.round(db)} dB over the noise`, state.squelch ? state.squelch / 40 : null); }
         if (pick.armedAt && (launchPicked === false || audioPick)) notePickSpectrum(m.bins as Float32Array, m.rangeDb as number);
         if (state.app === 'hd') { hdUi.bins = m.bins as Float32Array; hdUi.binsRange = m.rangeDb as number; }
-        if (scope) { scope.setScale(m.floorDb as number, m.rangeDb as number); scope.push(m.bins as Float32Array); }
+        if (scope && !document.hidden) { scope.setScale(m.floorDb as number, m.rangeDb as number); scope.push(m.bins as Float32Array); }
         break;
       // a sweep steers its gain from the 'sweep' message instead: see there
       case 'health': { const lost = radio?.delivery.note(performance.now()) ?? '', pops = audioHealthNote(); const extra = [lost, pops].filter(Boolean).join(' · '); lastHealth = extra ? `${m.line} · ${extra}` : m.line; } loraDelivery(); lastLevel = m.levelDb; loraGain.level = state.app === 'lora' ? m.lora ?? null : null; refreshReadout(); if (state.app !== 'lookingglass' && state.app !== 'search' && state.app !== 'spectrum') agcStep(m.rms as number); log(`${state.board || 'HackRF'} ${lastHealth}`); if (m.audio) log(`audio: peak=${Math.round(m.audioPeak)}/32000 ${m.audioPeak > 2500 ? '- demod producing audio' : '- silent (no modulation / no signal)'}`); break;
@@ -11244,7 +11244,7 @@ function syncKeepAwake(): void {
   }
   if (!tone && awakeTone) { awakeTone.stop(); awakeTone.disconnect(); awakeTone = null; }
 }
-document.addEventListener('visibilitychange', syncKeepAwake);
+document.addEventListener('visibilitychange', () => { syncKeepAwake(); worker?.postMessage({ type: 'config', hidden: document.hidden }); });
 setInterval(syncKeepAwake, 2_000);
 (window as unknown as { mmAwake: () => unknown }).mmAwake = () => ({ running: !!radio?.running, lock: !!awakeRelease, asked: awakeAsked, tone: !!awakeTone, audio: audioCtx?.state ?? 'none' });   // support hook: keep-awake state
 /** Called from anything that means "the user wants to hear this now". */
