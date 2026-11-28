@@ -42,8 +42,9 @@ const sleep = (ms: number) => new Promise<void>(r => setTimeout(r, ms));
 const READ_SIZE = 65536;
 /** Reads kept in flight, so a stalled page (a busy Mac audio thread, say) does not overflow the radio and drop
  *  samples - the loss bursts that are heard as audio pops. 16 at the wide audio rates (130 ms at 2 Msps), 32 from
- *  10 Msps up (52 ms at 20), 8 at the narrow rates where a stall is unlikely and latency matters more. */
-export function readDepth(rate: number): number { return rate >= 10_000_000 ? 32 : rate >= 1_500_000 ? 16 : 8; }
+ *  10 Msps up (52 ms at 20), 8 at the narrow rates where a stall is unlikely and latency matters more. A hidden tab,
+ *  which the browser runs late, keeps four times as many. */
+export function readDepth(rate: number, hidden = false): number { return (rate >= 10_000_000 ? 32 : rate >= 1_500_000 ? 16 : 8) * (hidden ? 4 : 1); }
 
 /** Kept as a name of its own; structurally this is `RadioEvents`. */
 export type HackRfEvents = RadioEvents;
@@ -256,7 +257,7 @@ export class HackRf implements Radio {
   private async stream(): Promise<void> {
     const inflight: Promise<USBInTransferResult>[] = [];
     const topUp = (): void => {
-      while (!this.stopFlag && !this.txJob && inflight.length < readDepth(this.targetRateHz)) inflight.push(this.dev.transferIn(this.epIn, READ_SIZE));
+      while (!this.stopFlag && !this.txJob && inflight.length < readDepth(this.targetRateHz, typeof document !== 'undefined' && document.hidden)) inflight.push(this.dev.transferIn(this.epIn, READ_SIZE));
     };
     topUp();
     this.restartDelivery();
