@@ -3,6 +3,7 @@
  * once/sec RX-health line, WFM / NFM / AM / USB / LSB audio to the AudioWorklet, and feeds the active app's
  * IqProcessor (raw IQ + the NFM discriminator tap for the FM-borne packet modes).
  */
+import { CarrierMeter } from './dsp/ppm.js';
 import { fft, hann, loadIqAt, accumulatePower, powerDbFrom } from './fft.js';
 import type { Emit, IqProcessor } from './dsp/core.js';
 import { AdsbDecoder } from './dsp/adsb.js';
@@ -397,6 +398,8 @@ drainPort.port1.onmessage = () => {
   while (queue.length && performance.now() - t0 < 8) process(queue.shift()!);
   armDrain();
 };
+/** A frequency correction measurement under way (RADIO panel, MEASURE). */
+let meter: CarrierMeter | null = null;
 function armDrain(): void { if (!drainArmed && queue.length) { drainArmed = true; drainPort.port2.postMessage(0); } }
 function dropQueued(): void { queue.length = 0; }
 /** Samples waiting in the queue. */
@@ -409,6 +412,7 @@ self.onmessage = (e: MessageEvent) => {
       // at most about 0.2 s of samples waits (whatever the buffer size and rate): the oldest go first, so a slow
       // start never leaves the waterfall and decoders seconds behind
       const b = new Int8Array(m.buf as ArrayBuffer);
+      if (meter && meter.push(b)) { post({ type: 'measured', ...(meter.result() ?? { offsetHz: NaN, snrDb: 0 }) }); meter = null; }
       // only LoRa queues (its channels catch up in bursts); every other app processes each buffer as it arrives,
       // exactly as before the queue existed
       if (processor !== lora && queue.length === 0) { process(b); break; }
@@ -524,6 +528,7 @@ self.onmessage = (e: MessageEvent) => {
     case 'digital': setDigital(m.mode as string, m); break;
     case 'js8Speeds': js8.enabled = { ...js8.enabled, ...(m.speeds as Record<string, boolean>) }; break;
     case 'satService': if (typeof m.baud === 'number') g3ruh.setBaud(m.baud); setSatService(m.kind as string); break;
+    case 'measure': meter = m.cancel ? null : new CarrierMeter(rate, m.offset as number, m.half as number, m.seconds as number); break;
     case 'tapFm': fmTap = new Float32Array(Math.round((m.seconds as number) * 50_000)); fmTapN = 0; applyTaps(); fmBurst = !!m.bursts; fmBurstEnd = performance.now() + ((m.wall as number) ?? m.seconds as number) * 1000; fmPre = new Float32Array(20_000); fmPreN = 0; fmHold = 0; fmAcc = 0; fmAccN = 0; fmFloor = 0; fmBurstCount = 0; break;
   }
 };

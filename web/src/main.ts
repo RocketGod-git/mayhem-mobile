@@ -53,6 +53,7 @@ import { GMRS_RATE, MURS_RATE, NARROW_RATE, centerOf as gmrsCenter, type GmrsBan
 import { GMRS_NAMER, gmrsBandsHtml, gmrsBoardHtml, gmrsCallsHtml, gmrsCardHtml, gmrsChanTitle, gmrsHeadHtml, gmrsHeatHtml, gmrsListenHtml, gmrsLogHtml, gmrsTilesHtml } from './gmrs-ui.js';
 import { secText, SEC_FROM, posText, onAirOrder, nowPlaying, callWho, unnamedQuiet, trackStats, sparkSvg, tgTiles, followTap, listenText, protoLabel, activityBuckets, encShare, agoShort, distBearing as flDistBearing, distText } from './dsp/fleet/view.js';
 import { enteredPlan } from './dsp/fleet/smartnet.js';
+import { clampPpm, measurePlan, ppmAfter, PPM_MAX } from './dsp/ppm.js';
 import type { FleetSnap, CallRow as FleetCall, Lock as DispatchLock, TgPrefs, UnitReport as FleetUnitReport, SystemRow as FleetSystem, SiteRow as FleetSite, CarrierRow as FleetCarrier, GrantRow as FleetGrant } from './dsp/fleet/fleet.js';
 import type { Iden as FleetIden } from './dsp/fleet/tsbk.js';
 import { hamSpots, loadLayers, saveLayers, visibleSpots, gridRing, freqText, bandLabel, type HamSpot, type HamLayer } from './ham-spots.js';
@@ -229,6 +230,8 @@ let logFollow = true;   // stops when the reader scrolls up, resumes at the bott
 let radio: Radio | null = null;
 /** The USB device behind `radio`, so a detach event can tell whether it was the radio that left. */
 let radioDev: USBDevice | null = null;
+/** The last radio that opened, so USE can tell one that never did. */
+let radioOpened: USBDevice | null = null;
 /** True from the start of connect() until its radio stops, so two bring-ups never race for one device. */
 let connecting = false;
 // Transmit is a HackRF capability and there is no polite way to fake it: a dongle receives only. Handing the
@@ -11033,6 +11036,7 @@ function ensureWorker(): Worker {
       case 'atscDetail': atscOnDetail(m); break;
       case 'atscExport': atscExport(m.csv as string, m.json as string); break;
       case 'atscState': atscSave(m.state); break;
+      case 'measured': ppmMeasured?.(m as { offsetHz: number; snrDb: number }); break;
       case 'fmTap': (window as unknown as { mmFmTap: unknown }).mmFmTap = { rate: m.rate, samples: m.samples }; log(`fm tap: ${(m.samples as Float32Array).length} samples @ ${m.rate}`); break;
       case 'aircraft': state.aircraft = m.list; state.frames = m.frames; refreshAdsb(); break;
       case 'huntPage': onHuntPage(m); break;
@@ -11282,11 +11286,13 @@ async function connect(dev?: USBDevice): Promise<void> {
       },
     });
     r.targetFreqHz = state.freq; r.targetRateHz = state.rate; r.setGain(state.lna, state.vga, state.amp);
+    r.ppm = savedPpm(d, false);
     state.biast = false;   // antenna power is off at every connect; keep the UI honest
     radio = r; radioDev = d;
     refreshLauncherLimits();
     applyLauncherView();          // now we know how wide it can go, show the whole band rather than a slice
     await r.open();
+    radioOpened = d;
     btn.textContent = 'DISCONNECT'; syncRadioPanel();
     hideHint();                     // claimed — any "device busy / not found" hint is now stale
     await r.run();
@@ -11326,13 +11332,14 @@ async function connectRtl(d: USBDevice, events: { onIq: (b: Int8Array) => void; 
   r.targetFreqHz = state.freq;
   r.targetRateHz = nearestRate(r.limits, state.rate);
   r.setGain(state.lna, state.vga, state.amp);
-  r.ppm = savedPpm();
+  r.ppm = savedPpm(d, true);
   state.biast = false;   // the dongle powers up with the bias tee off; keep the UI honest
   radio = r; radioDev = d;
   refreshLauncherLimits();
   applyLauncherView();
   if (r.targetRateHz !== state.rate) { state.rate = r.targetRateHz; worker?.postMessage({ type: 'config', rate: state.rate }); refreshReadout(); }
   await r.open();
+  radioOpened = d;
   btn.textContent = 'DISCONNECT'; syncRadioPanel();
   hideHint();                       // claimed — clear any stale connect hint
   await r.run();
@@ -11723,10 +11730,19 @@ async function radioRelease(): Promise<void> {
 function disconnectRadio(): void { radioUserOff = true; radio?.stop(); log('radio disconnected'); }
 /** Switch to this radio: the one running stops first. */
 async function useRadio(d: USBDevice): Promise<void> {
-  radioUserOff = false; radioSetPref(d);
+  radioUserOff = false;
   if (radioDev === d && radio?.running) return;
+  const prev = radioDev !== d ? radioDev : null;
+  radioOpened = null;
   await radioRelease();
   await connect(d).catch(() => undefined);
+  // connect returns when the radio stops; one that never opened leaves you with none, so the one before comes back
+  if (radioOpened !== d && prev && !radioUserOff) {
+    try { if (d.opened) await d.close(); } catch { /* ignore */ }
+    log(`${radioDevName(d)} could not be opened; back to ${radioDevName(prev)}`);
+    radioSetPref(prev);
+    await connect(prev).catch(() => undefined);
+  }
 }
 /** RADIOS in the RADIO panel: every radio this site may use, which one is running, and a way to add another. */
 async function drawRadioList(): Promise<void> {
@@ -11812,7 +11828,10 @@ function drawRadioPanel(): void {
   if (!rates.includes(state.rate)) rates.push(state.rate);
   rates.sort((a, b) => b - a);
   let samp = srow('Sample rate', 'Each app opens at its own rate. A change here lasts until you open another app.', `<select id="rp-rate" class="txin">${rates.map(r => `<option value="${r}"${r === state.rate ? ' selected' : ''}>${msps(r)}</option>`).join('')}</select>`, 'bandwidth span');
-  if (c.ppm && rtl) samp += srow('Frequency correction', 'Crystal error in parts per million. Remembered for this browser.', `<button id="rp-ppm-m" class="tog">−</button><input id="rp-ppm" class="txin num" type="number" step="1" min="-200" max="200" value="${rtl.ppm}"><button id="rp-ppm-p" class="tog">+</button>`, 'ppm offset crystal');
+  if (c.ppm) {
+    samp += srow('Frequency correction', `This radio's crystal error in parts per million, saved for this radio. Most radios need 0 to 5.`, `<button id="rp-ppm-m" class="tog">−</button><input id="rp-ppm" class="txin num" type="number" step="1" min="-${PPM_MAX}" max="${PPM_MAX}" value="${radio.ppm}"><button id="rp-ppm-p" class="tog">+</button><button id="rp-ppm-0" class="tog">RESET</button>`, 'ppm offset crystal frequency correction');
+    samp += srow('Measure correction', val('rp-ppm-r', esc(ppmNote || 'Type the exact frequency of a steady carrier you can hear and press MEASURE. Takes about 3 seconds.')), `<input id="rp-ppm-k" class="txin num rp-known" inputmode="decimal" placeholder="MHz" value="${esc(ppmKnown)}"><button id="rp-ppm-go" class="tog">MEASURE</button>`, 'ppm measure calibrate');
+  }
   if (c.directSampling && rtl) samp += srow('Direct sampling', 'HF below 24 MHz read straight off the ADC (Q branch). Off, the dongle stops at 24 MHz.', swHtml('rp-ds', rtl.directSamplingAllowed), 'hf direct');
   const missing = rtl ? 'No offset tuning: R82xx tuners have no offset mode (librtlsdr refuses it for them too).' : '';
   view.innerHTML = `<section class="controls settings-page">
@@ -11864,15 +11883,18 @@ function bindRadioPanel(view: HTMLElement): void {
   const rate = el<HTMLSelectElement>('rp-rate');
   if (rate) rate.onchange = () => { setRate(Number(rate.value)); rate.blur(); syncRadioPanel(); };
   const ppm = el<HTMLInputElement>('rp-ppm');
-  const setPpm = (v: number) => {
-    const r = rtlRadio(); if (!r || !Number.isFinite(v)) return;
-    r.ppm = Math.max(-200, Math.min(200, Math.round(v)));
-    try { localStorage.setItem(PPM_KEY, String(r.ppm)); } catch { /* ignore */ }
-    if (ppm) ppm.value = String(r.ppm);
-  };
-  if (ppm) ppm.onchange = () => setPpm(Number(ppm.value));
-  click('rp-ppm-m', () => setPpm((rtlRadio()?.ppm ?? 0) - 1));
-  click('rp-ppm-p', () => setPpm((rtlRadio()?.ppm ?? 0) + 1));
+  if (ppm) ppm.onchange = () => setRadioPpm(Number(ppm.value));
+  click('rp-ppm-m', () => setRadioPpm((radio?.ppm ?? 0) - 1));
+  click('rp-ppm-p', () => setRadioPpm((radio?.ppm ?? 0) + 1));
+  const note = (t: string) => { ppmNote = t; const e = el('rp-ppm-r'); if (e) e.textContent = t; };
+  click('rp-ppm-0', () => { setRadioPpm(0); note('Correction set back to 0.'); });
+  click('rp-ppm-go', () => {
+    const k = el<HTMLInputElement>('rp-ppm-k'), btn = el<HTMLButtonElement>('rp-ppm-go');
+    if (!k || !btn || btn.disabled) return;
+    ppmKnown = k.value.trim();
+    btn.disabled = true; note('Measuring…');
+    void measurePpm(Math.round(Number(ppmKnown.replace(',', '.')) * 1e6)).then(t => { btn.disabled = false; note(t); });
+  });
   click('rp-ds', () => {
     const r = rtlRadio(); if (!r) return;
     r.setDirectSampling(!r.directSamplingAllowed);
@@ -11880,10 +11902,48 @@ function bindRadioPanel(view: HTMLElement): void {
     syncRadioPanel();
   });
 }
-/** Where an RTL-SDR's crystal correction is remembered. */
+/** Where the one RTL-SDR correction was kept before each radio had its own. */
 const PPM_KEY = 'mayhem.rtl.ppm';
-function savedPpm(): number {
-  try { const v = Number(localStorage.getItem(PPM_KEY)); return Number.isFinite(v) ? Math.max(-200, Math.min(200, Math.round(v))) : 0; } catch { return 0; }
+const ppmKeyOf = (d: USBDevice) => `mm.ppm.${radioKey(d)}`;
+function savedPpm(d: USBDevice, rtl: boolean): number {
+  try {
+    let v = localStorage.getItem(ppmKeyOf(d));
+    if (v === null && rtl) v = localStorage.getItem(PPM_KEY);
+    return v === null ? 0 : clampPpm(Number(v)) || 0;
+  } catch { return 0; }
+}
+function setRadioPpm(v: number): void {
+  if (!radio || !Number.isFinite(v)) return;
+  radio.ppm = clampPpm(v);
+  try { if (radioDev) localStorage.setItem(ppmKeyOf(radioDev), String(radio.ppm)); } catch { /* ignore */ }
+  const p = q<HTMLInputElement>('#rp-ppm'); if (p) p.value = String(radio.ppm);
+  log(`frequency correction ${radio.ppm > 0 ? '+' : ''}${radio.ppm} ppm`);
+}
+/** The last MEASURE: what was typed and what came of it, kept while the panel redraws. */
+let ppmKnown = '', ppmNote = '';
+let ppmMeasured: ((m: { offsetHz: number; snrDb: number }) => void) | null = null;
+/** Measure the correction on a steady carrier at [knownHz]: the span moves just under it for a few seconds, then back. */
+async function measurePpm(knownHz: number): Promise<string> {
+  const r = radio, w = worker;
+  if (!r || !w) return 'Connect a radio first.';
+  if (!r.running) return 'Start the radio first: open any app so it is receiving.';
+  const lo = r.limits.minHz + 400_000;
+  if (!Number.isFinite(knownHz) || knownHz < lo || knownHz > r.limits.maxHz) return `Type a frequency in MHz this radio can tune, from ${mhzTxt(lo)} to ${mhzTxt(r.limits.maxHz)}.`;
+  const { offset, half } = measurePlan(r.targetRateHz), center = knownHz - offset, prev = r.targetFreqHz, old = r.ppm;
+  r.targetFreqHz = center;
+  const got = await new Promise<{ offsetHz: number; snrDb: number } | null>(res => {
+    ppmMeasured = res; setTimeout(() => res(null), 8_000);
+    w.postMessage({ type: 'measure', offset, half, seconds: 2.5 });
+  });
+  ppmMeasured = null;
+  if (r.targetFreqHz !== center) { w.postMessage({ type: 'measure', cancel: true }); return 'The app moved the radio while measuring. Try again, or pause the app first.'; }
+  r.targetFreqHz = prev;
+  if (!got) { w.postMessage({ type: 'measure', cancel: true }); return 'Nothing came in from the radio. Is it receiving?'; }
+  if (!Number.isFinite(got.offsetHz) || got.snrDb < 15) return `No steady carrier heard at ${mhzTxt(knownHz)}. Pick a stronger one, or one that is always on.`;
+  const next = clampPpm(ppmAfter(old, center, offset, got.offsetHz)), off = got.offsetHz - offset;
+  setRadioPpm(next);
+  const sign = (v: number) => `${v > 0 ? '+' : ''}${v}`;
+  return `Heard ${(Math.abs(off) / 1000).toFixed(2)} kHz ${off < 0 ? 'low' : 'high'}, ${got.snrDb.toFixed(0)} dB over the noise. Correction set to ${sign(next)} ppm (was ${sign(old)}).`;
 }
 /** Bring the panel up to date in place: the AGC moves the gains every second, and that must not redraw the page. */
 function syncRadioPanel(): void {

@@ -68,7 +68,7 @@ export const HACKRF_LIMITS: RadioLimits = {
 /** Everything a HackRF (One, r9, Pro, or a PortaPack in HackRF mode) can be told besides frequency. */
 export const HACKRF_CAPS: RadioCaps = {
   stagedGain: true, tunerGain: false, amp: true, biasT: true, biasVolts: 3.3,
-  tunerAgc: false, rtlAgc: false, ppm: false, directSampling: false, bbFilters: BB_FILTER_BW,
+  tunerAgc: false, rtlAgc: false, ppm: true, directSampling: false, bbFilters: BB_FILTER_BW,
 };
 
 export class HackRf implements Radio {
@@ -92,6 +92,8 @@ export class HackRf implements Radio {
   biasT = false;
   /** Baseband filter in hertz, or 0 to follow the sample rate (the largest bandwidth under it, as libhackrf does). */
   bbFilterHz = 0;
+  /** Crystal correction in parts per million: every tune, receive and transmit, is moved to cancel it. */
+  ppm = 0;
 
   board = '';
   firmware = '';
@@ -190,13 +192,14 @@ export class HackRf implements Radio {
     const g = gainStages(want);
     await this.setSampleRate(want.rateHz);
     await this.setBasebandFilter(bbFor(want));
-    await this.setFreq(want.freqHz);
+    const hz = hackrfTuneHz(want.freqHz, want.ppm);
+    await this.setFreq(hz);
     await this.setGains(g);
     await this.setTransceiverMode(MODE_RECEIVE);
     // Pro: cache-busting re-tune after RECEIVE so the FPGA quarter shift is re-programmed
     await sleep(40);
-    await this.setFreq(want.freqHz + 1_000_000);
-    await this.setFreq(want.freqHz);
+    await this.setFreq(hz + 1_000_000);
+    await this.setFreq(hz);
     await this.setGains(g);
     await this.setAntennaPower(want.bias);
     this.appliedFreq = want.freqHz;
@@ -214,7 +217,8 @@ export class HackRf implements Radio {
       this.ev.onStatus(`TX · ${job.label}`);
       await this.setTransceiverMode(MODE_OFF); await sleep(50);
       await this.setSampleRate(job.rateHz); await this.setBasebandFilter(bbFilterRoundDownLt(job.rateHz));
-      await this.setFreq(job.freqHz + 1_000_000); await this.setFreq(job.freqHz);
+      const hz = hackrfTuneHz(job.freqHz, this.ppm);
+      await this.setFreq(hz + 1_000_000); await this.setFreq(hz);
       await this.ctrlOut(REQ.AMP_ENABLE, job.amp ? 1 : 0, 0, undefined, 'AMP');
       await this.ctrlIn(REQ.SET_TXVGA_GAIN, 0, Math.min(47, Math.max(0, job.txVgaDb)), 1, 'TXVGA');
       await sleep(40);
@@ -289,7 +293,7 @@ export class HackRf implements Radio {
 
   /** The live controls at one instant. */
   snapshot(): RxSettings {
-    return { rateHz: this.targetRateHz, freqHz: this.targetFreqHz, bbHz: this.bbFilterHz, lna: this.lnaDb, vga: this.vgaDb, amp: this.amp, bias: this.biasT };
+    return { rateHz: this.targetRateHz, freqHz: this.targetFreqHz, bbHz: this.bbFilterHz, lna: this.lnaDb, vga: this.vgaDb, amp: this.amp, bias: this.biasT, ppm: this.ppm };
   }
 
   /** Any change asked for since the last buffer. The controls are read once, written from that one reading and recorded as
@@ -304,8 +308,8 @@ export class HackRf implements Radio {
         case 'bb': await this.setBasebandFilter(w.hz); break;
         case 'bias': await this.setAntennaPower(w.on); break;
         case 'retune':
-          await this.setFreq(w.hz + 1_000_000);
-          await this.setFreq(w.hz);
+          await this.setFreq(hackrfTuneHz(w.hz, want.ppm) + 1_000_000);
+          await this.setFreq(hackrfTuneHz(w.hz, want.ppm));
           this.appliedFreq = w.hz;
           await sleep(50);
           this.ev.onStatus(`${this.board} · ${(w.hz / 1e6).toFixed(3)} MHz`);
@@ -369,12 +373,16 @@ export interface RxSettings {
   /** The baseband filter set by hand, 0 = follow the rate. */
   bbHz: number;
   lna: number; vga: number; amp: boolean; bias: boolean;
+  /** Crystal correction, ppm. */
+  ppm: number;
 }
 /** One step of a receive retune, in the order it is sent. 'retune' is the Pro's cache-busting pair (1 MHz off, then the target). */
 export type RxWrite =
   | { kind: 'rate'; hz: number } | { kind: 'bb'; hz: number } | { kind: 'bias'; on: boolean }
   | { kind: 'retune'; hz: number } | { kind: 'gains'; amp: boolean; lna: number; vga: number };
 
+/** What to ask the radio for so it lands on [hz] when its crystal runs [ppm] fast. */
+export function hackrfTuneHz(hz: number, ppm: number): number { return Math.round(hz / (1 + ppm / 1e6)); }
 /** The baseband filter for a setting: the one set by hand, else the largest under the rate (libhackrf's rule). */
 export function bbFor(s: RxSettings): number { return s.bbHz || bbFilterRoundDownLt(s.rateHz); }
 /** The stage values a setting asks for, on the steps the chips take (LNA 8 dB, VGA 2 dB). */
@@ -384,7 +392,7 @@ export function gainStages(s: RxSettings): { amp: boolean; lna: number; vga: num
 /** The writes that take the radio from what it was last told (have) to want, or every one of them when nothing was. */
 export function retunePlan(want: RxSettings, have: RxSettings | null): RxWrite[] {
   const rate = !have || have.rateHz !== want.rateHz;
-  const freq = !have || have.freqHz !== want.freqHz;
+  const freq = !have || have.freqHz !== want.freqHz || have.ppm !== want.ppm;
   const bb = !have || have.bbHz !== want.bbHz;
   const bias = !have || have.bias !== want.bias;
   const gain = !have || have.lna !== want.lna || have.vga !== want.vga || have.amp !== want.amp;

@@ -56,6 +56,8 @@ export interface Radio {
    * it does have and says so in its own control panel, rather than silently ignoring one.
    */
   setGain(lnaDb: number, vgaDb: number, amp: boolean): void;
+  /** Crystal correction in parts per million, used when [RadioCaps.ppm]. */
+  ppm: number;
   /** Which knobs this radio really has, for the RADIO panel. Only what bring-up has found is listed. */
   readonly caps: RadioCaps;
   /** Samples delivered against wall time, at the rate streaming now. */
