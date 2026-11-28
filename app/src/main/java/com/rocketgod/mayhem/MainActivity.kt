@@ -481,7 +481,8 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun engage(d: UsbDevice) {
+    /** [back]: the radio running before a USE, opened again if [d] never streams. */
+    private fun engage(d: UsbDevice, back: UsbDevice? = null) {
         // the launch intent and onResume's check can both land here before the first radio thread has set its running
         // flag: one radio thread at a time, or the loser returns at once and marks the app disconnected while the
         // winner streams (the "no radio" banner over a working radio)
@@ -490,16 +491,32 @@ class MainActivity : ComponentActivity() {
         val rtl = RtlSdr.isRtlSdr(d)
         RadioChoice.remember(this, d); RadioChoice.running = d.deviceName
         SdrEngine.onRadio(if (rtl) com.rocketgod.mayhem.core.Radio.Kind.RTLSDR else com.rocketgod.mayhem.core.Radio.Kind.HACKRF)
+        SdrEngine.loadPpm(RadioChoice.keyOf(d), rtl)
         status.value = "${if (rtl) "RTL-SDR" else "HackRF"} · opening ${HackRfUsb.describe(d)}"
         connected.value = true
         val appCtx = applicationContext
         rxThread = Thread({
             // the USB reads come first: a late one is a lost buffer, whatever the decoders are doing
             runCatching { android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_URGENT_AUDIO) }
+            val starts = SdrEngine.streamStarts
             if (rtl) RtlSdr.run(appCtx, d) { s -> status.value = s } else HackRfOne.run(appCtx, d) { s -> status.value = s }
             SdrEngine.onRadio(com.rocketgod.mayhem.core.Radio.Kind.NONE)
             connected.value = false
             RadioChoice.running = null
+            // a radio that never streamed leaves you with none, so the one before comes back
+            if (back != null && SdrEngine.streamStarts == starts && !RadioChoice.userOff) {
+                val me = Thread.currentThread()
+                Thread({
+                    runCatching { me.join(3000) }
+                    runOnUiThread {
+                        if (isDestroyed || radioRunning() || RadioChoice.userOff) return@runOnUiThread
+                        val again = RadioChoice.attached(this).firstOrNull { it.deviceName == back.deviceName } ?: return@runOnUiThread
+                        Diag.log("${RadioChoice.name(d)} could not be opened; back to ${RadioChoice.name(again)}")
+                        RadioChoice.remember(this, again)
+                        if (HackRfUsb.hasPermission(this, again)) engage(again)
+                    }
+                }, "radio-back").start()
+            }
         }, "hackrf-rx").apply { isDaemon = true; start() }
     }
 
@@ -508,6 +525,7 @@ class MainActivity : ComponentActivity() {
         RadioChoice.userOff = false
         if (RadioChoice.running == d.deviceName && radioUsbRunning()) return
         val app = applicationContext
+        val prev = RadioChoice.running?.takeIf { it != d.deviceName }?.let { n -> RadioChoice.attached(this).firstOrNull { it.deviceName == n } }
         Thread({
             if (radioUsbRunning() || rxThread?.isAlive == true) { HackRfOne.abort(); RtlSdr.abort(); runCatching { rxThread?.join(3000) } }
             runOnUiThread {
@@ -515,7 +533,7 @@ class MainActivity : ComponentActivity() {
                 when {
                     HackRfUsb.isMayhemSerial(d) -> if (HackRfUsb.hasPermission(this, d)) Thread({ HackRfUsb.portapackToHackRf(app, d) }, "portapack-switch").start()
                         else HackRfUsb.requestPermission(this, d)
-                    HackRfUsb.hasPermission(this, d) -> engage(d)
+                    HackRfUsb.hasPermission(this, d) -> engage(d, prev)
                     else -> { askingPermission = true; status.value = "asking for USB permission…"; HackRfUsb.requestPermission(this, d) }
                 }
             }

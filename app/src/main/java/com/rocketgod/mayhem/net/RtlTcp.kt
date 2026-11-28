@@ -164,6 +164,7 @@ object RtlTcp {
             if (!live(my)) return
             active = true; appliedFreq = 0L; shortSamples = 0; label = "rtl_tcp · $at"; tuner = ""; tunerType = 0
             SdrEngine.onRadio(Radio.Kind.RTLSDR)
+            SdrEngine.loadPpm(at, true)
             var backoff = 1_000L
             var attempts = 0
             var lastWhy = ""

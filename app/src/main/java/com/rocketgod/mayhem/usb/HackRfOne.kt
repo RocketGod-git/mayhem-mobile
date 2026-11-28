@@ -53,6 +53,8 @@ object HackRfOne {
     @Volatile var biasT = false
     /** Baseband filter in hertz, or 0 to follow the sample rate (the largest bandwidth under it, as libhackrf does). */
     @Volatile var bbFilterHz = 0
+    /** Crystal correction in parts per million: every tune, receive and transmit, is moved to cancel it. */
+    @Volatile var ppm = 0
 
     /** Board id / firmware string read at bring-up, for the UI. */
     @Volatile var boardLabel = ""; private set
@@ -115,6 +117,8 @@ object HackRfOne {
         /** 1 on, 0 off, -1 derived from gainTenthDb. */
         val amp: Int,
         val bias: Boolean,
+        /** Crystal correction, ppm. */
+        val ppm: Int = 0,
     )
     /** One step of a receive retune, in the order it is sent. */
     sealed class RxWrite {
@@ -126,12 +130,12 @@ object HackRfOne {
         data class Gains(val amp: Boolean, val lna: Int, val vga: Int) : RxWrite()
     }
 
-    fun snapshot() = RxSettings(targetRateHz, targetFreqHz, bbFilterHz, targetGainTenthDb, ovrLnaDb, ovrVgaDb, ovrAmp, biasT)
+    fun snapshot() = RxSettings(targetRateHz, targetFreqHz, bbFilterHz, targetGainTenthDb, ovrLnaDb, ovrVgaDb, ovrAmp, biasT, ppm)
 
     /** The writes that take the radio from what it was last told ([have]) to [want], or every one of them when nothing was. */
     fun retunePlan(want: RxSettings, have: RxSettings?): List<RxWrite> {
         val rate = have == null || have.rateHz != want.rateHz
-        val freq = have == null || have.freqHz != want.freqHz
+        val freq = have == null || have.freqHz != want.freqHz || have.ppm != want.ppm
         val bb = have == null || have.bbHz != want.bbHz
         val bias = have == null || have.bias != want.bias
         val gain = have == null || have.gainTenthDb != want.gainTenthDb || have.lna != want.lna || have.vga != want.vga || have.amp != want.amp
@@ -226,7 +230,8 @@ object HackRfOne {
         val g = gainStages(want)
         val rcSr = setSampleRate(want.rateHz)
         val rcBb = setBasebandFilter(bbFor(want))
-        val rcFq = setCenterFreq(want.freqHz)
+        val hz = hackrfTuneHz(want.freqHz, want.ppm)
+        val rcFq = setCenterFreq(hz)
         val (rcAmp, rcLna, rcVga) = setGains(g.first, g.second, g.third)
         val rcRx = setTransceiverMode(TRANSCEIVER_MODE_RECEIVE)
         // ★ THE PRO FIX — cache-busting post-RECEIVE re-tune. Source-confirmed against Mayhem radio.cpp
@@ -238,8 +243,8 @@ object HackRfOne {
         // re-tune is a NO-OP → write an off-target freq FIRST to bust the cache, THEN the real target. Also
         // re-apply gains (entering RX can reset them on the Pro). Harmless on a standard zero-IF HackRF.
         Thread.sleep(40)
-        setCenterFreq(want.freqHz + 1_000_000L)   // cache-bust: make the real target below differ from the cached freq
-        val rcFq2 = setCenterFreq(want.freqHz)     // real target → re-runs tuning AFTER RX → re-programs the FPGA quarter shift
+        setCenterFreq(hz + 1_000_000L)   // cache-bust: make the real target below differ from the cached freq
+        val rcFq2 = setCenterFreq(hz)     // real target → re-runs tuning AFTER RX → re-programs the FPGA quarter shift
         val (rcAmp2, rcLna2, rcVga2) = setGains(g.first, g.second, g.third)
         setAntennaPower(want.bias)
         appliedFreq = want.freqHz
@@ -266,7 +271,8 @@ object HackRfOne {
             onStatus("TX · ${job.label}")
             setTransceiverMode(TRANSCEIVER_MODE_OFF); Thread.sleep(50)
             setSampleRate(job.rateHz); setBasebandFilter(bbFilterRoundDownLt(job.rateHz))
-            setCenterFreq(job.freqHz + 1_000_000L); setCenterFreq(job.freqHz)
+            val hz = hackrfTuneHz(job.freqHz, ppm)
+            setCenterFreq(hz + 1_000_000L); setCenterFreq(hz)
             setAmp(job.amp); setTxVgaGain(job.txVgaDb.coerceIn(0, 47))
             Thread.sleep(40)
             setTransceiverMode(TRANSCEIVER_MODE_TRANSMIT)
@@ -404,7 +410,8 @@ object HackRfOne {
             is RxWrite.BasebandFilter -> runCatching { setBasebandFilter(w.hz) }
             is RxWrite.AntennaPower -> runCatching { setAntennaPower(w.on) }
             is RxWrite.Retune -> {
-                runCatching { setCenterFreq(w.hz + 1_000_000L); setCenterFreq(w.hz) }
+                val hz = hackrfTuneHz(w.hz, want.ppm)
+                runCatching { setCenterFreq(hz + 1_000_000L); setCenterFreq(hz) }
                 appliedFreq = w.hz
                 Thread.sleep(50)   // let the RFFC5072 LO relock + FPGA quarter-shift/decim settle before the next read
                 onStatus("$boardLabel · %.3f MHz".format(w.hz / 1e6))
@@ -479,6 +486,8 @@ object HackRfOne {
     }
 
     /** The baseband filter for a setting: the one set by hand, else the largest under the rate (libhackrf's rule). */
+    /** What to ask the radio for so it lands on [hz] when its crystal runs [ppm] fast. */
+    fun hackrfTuneHz(hz: Long, ppm: Int): Long = Math.round(hz / (1 + ppm / 1e6))
     fun bbFor(s: RxSettings): Int = if (s.bbHz > 0) s.bbHz else bbFilterRoundDownLt(s.rateHz)
 
     /** Antenna port power on or off (ANTENNA_ENABLE, OUT with the value in wValue and no data stage). */

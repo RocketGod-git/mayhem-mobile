@@ -426,7 +426,10 @@ fun RadioPanel() {
                     val rates = (Radio.RATE_CHOICES.filter { Radio.canSample(Radio.limits, it) } + rate).distinct().sortedDescending()
                     val samp = buildList {
                         add(SRow("rate") { PickRow("Sample rate", "Each app opens at its own rate. A change here lasts until you open another app.", rates.map { it to mspsText(it) }, rate, red) { SdrEngine.setRate(it) } })
-                        if (caps.ppm) add(SRow("ppm") { PpmRow(ppm, red) })
+                        if (caps.ppm) {
+                            add(SRow("ppm offset crystal frequency correction") { PpmRow(ppm, red) })
+                            add(SRow("ppm measure calibrate") { PpmMeasureRow(red) })
+                        }
                         if (caps.directSampling) add(SRow("ds") { SwitchRow("Direct sampling", ds, "HF below 24 MHz read straight off the ADC (Q branch). Off, the dongle stops at 24 MHz.") { SdrEngine.setDirectSampling(it) } })
                     }
                     PanelSection("GAIN", gain)
@@ -637,12 +640,12 @@ private fun PickRow(label: String, desc: String?, options: List<Pair<Int, String
     }
 }
 
-/** An RTL-SDR's crystal correction: − and + a part per million at a time, or typed. */
+/** The radio's crystal correction: − and + a part per million at a time, typed, or RESET to 0. */
 @Composable
 private fun PpmRow(ppm: Int, accent: Color) {
     val d = rememberDims()
     var txt by remember(ppm) { mutableStateOf(ppm.toString()) }
-    SRowLayout("Frequency correction", "Crystal error in parts per million. Remembered on this device.") {
+    SRowLayout("Frequency correction", "This radio's crystal error in parts per million, saved for this radio. Most radios need 0 to 5.") {
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(d.dp(6f))) {
             SmallButton("−", accent) { SdrEngine.setPpm(ppm - 1) }
             BasicTextField(txt, { v ->
@@ -654,6 +657,43 @@ private fun PpmRow(ppm: Int, accent: Color) {
                 textStyle = TextStyle(color = Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(13f), textAlign = TextAlign.Center),
                 modifier = Modifier.width(d.dp(56f)).clip(RoundedCornerShape(6.dp)).border(1.dp, Palette.line, RoundedCornerShape(6.dp)).padding(vertical = d.dp(7f)))
             SmallButton("+", accent) { SdrEngine.setPpm(ppm + 1) }
+            SmallButton("RESET", accent) { SdrEngine.setPpm(0); PpmUi.note = "Correction set back to 0." }
+        }
+    }
+}
+
+/** The last MEASURE: what was typed and what came of it, kept while the panel redraws. */
+private object PpmUi {
+    var known by mutableStateOf("")
+    var note by mutableStateOf("")
+    var busy by mutableStateOf(false)
+}
+
+/** MEASURE: the exact frequency of a steady carrier, and the correction read off it. */
+@Composable
+private fun PpmMeasureRow(accent: Color) {
+    val d = rememberDims()
+    SRowLayout("Measure correction", PpmUi.note.ifEmpty { "Type the exact frequency of a steady carrier you can hear and press MEASURE. Takes about 3 seconds." }) {
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(d.dp(6f))) {
+            Box(Modifier.width(d.dp(104f)).clip(RoundedCornerShape(6.dp)).border(1.dp, Palette.line, RoundedCornerShape(6.dp)).padding(horizontal = d.dp(8f), vertical = d.dp(7f)),
+                contentAlignment = Alignment.CenterStart) {
+                if (PpmUi.known.isEmpty()) Text("MHz", color = Palette.muted, fontFamily = Mono, fontSize = d.sp(13f), maxLines = 1)
+                BasicTextField(PpmUi.known, { v -> PpmUi.known = v.filter { it.isDigit() || it == '.' || it == ',' }.take(14) }, singleLine = true, cursorBrush = SolidColor(accent),
+                    keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(keyboardType = androidx.compose.ui.text.input.KeyboardType.Decimal),
+                    textStyle = TextStyle(color = Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = d.sp(13f)), modifier = Modifier.fillMaxWidth())
+            }
+            Box(Modifier.alpha(if (PpmUi.busy) 0.5f else 1f)) {
+                SmallButton("MEASURE", accent) {
+                    if (PpmUi.busy) return@SmallButton
+                    PpmUi.busy = true; PpmUi.note = "Measuring…"
+                    val hz = PpmUi.known.trim().replaceFirst(',', '.').ifEmpty { "0" }.toDoubleOrNull()?.takeIf { it.isFinite() }?.let { Math.round(it * 1e6) }
+                    // off the UI thread, and finished even if the panel closes meanwhile
+                    Thread({
+                        val t = SdrEngine.measurePpm(hz)
+                        android.os.Handler(android.os.Looper.getMainLooper()).post { PpmUi.note = t; PpmUi.busy = false }
+                    }, "ppm-measure").start()
+                }
+            }
         }
     }
 }

@@ -74,7 +74,7 @@ object Radio {
     /** Everything a HackRF (One, r9, Pro, or a PortaPack in HackRF mode) can be told besides frequency. */
     val HACKRF_CAPS by lazy {
         Caps(stagedGain = true, tunerGain = false, amp = true, biasT = true, biasVolts = 3.3,
-            tunerAgc = false, rtlAgc = false, ppm = false, directSampling = false, bbFilters = com.rocketgod.mayhem.usb.HackRfOne.BB_FILTER_BW.toList())
+            tunerAgc = false, rtlAgc = false, ppm = true, directSampling = false, bbFilters = com.rocketgod.mayhem.usb.HackRfOne.BB_FILTER_BW.toList())
     }
 
     /** What the attached radio can be told, for the RADIO panel; null with nothing attached. Only what bring-up has found is listed. */
