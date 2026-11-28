@@ -108,29 +108,29 @@ interface AppDef { id: AppId; title: string; blurb: string; cat: 'Receive' | 'An
 const APPS: AppDef[] = [
   { id: 'audio', title: 'Audio', blurb: 'WFM · NFM · AM · SSB', cat: 'Receive' },
   { id: 'hd', title: 'HD Radio', blurb: 'station data · art · traffic', cat: 'Receive' },
-  { id: 'fleet', title: 'Dispatch', blurb: 'P25 · DMR · Type II trunking and calls', cat: 'Receive' },
+  { id: 'fleet', title: 'Dispatch', blurb: 'P25 · DMR · NXDN · TETRA · Smartnet', cat: 'Receive' },
   { id: 'pager', title: 'Pagers', blurb: 'FLEX · POCSAG', cat: 'Receive' },
-  { id: 'lora', title: 'Mesh', blurb: 'LoRa · Meshtastic · MeshCore', cat: 'Receive' },
-  { id: 'adsb', title: 'Flights', blurb: 'ADS-B · 1090 MHz', cat: 'Receive' },
+  { id: 'lora', title: 'Mesh', blurb: 'Meshtastic · MeshCore · LoRaWAN', cat: 'Receive' },
+  { id: 'adsb', title: 'Flights', blurb: 'ADS-B · 1090 MHz', cat: 'Receive' },
   { id: 'uat', title: 'Flight UAT', blurb: 'UAT 978 · weather · small planes', cat: 'Receive' },
   { id: 'acars', title: 'Flight Msgs', blurb: 'ACARS · VDL2', cat: 'Receive' },
   // VDL2 has no tile or bar key of its own: it is the 136.975 band of Flight Messages (see MERGED_INTO)
-  { id: 'vdl2', title: 'Flight Msgs', blurb: 'VDL Mode 2 · 136.975 MHz', cat: 'Receive' },
+  { id: 'vdl2', title: 'Flight Msgs', blurb: 'VDL Mode 2 · 136.975 MHz', cat: 'Receive' },
   { id: 'trains', title: 'Trains', blurb: 'EOT · PTC', cat: 'Receive' },
-  { id: 'ais', title: 'Ships', blurb: 'AIS · 162 MHz', cat: 'Receive' },
+  { id: 'ais', title: 'Ships', blurb: 'AIS · 162 MHz', cat: 'Receive' },
   { id: 'cell', title: 'Cell', blurb: 'LTE alerts · cell info', cat: 'Receive' },
   { id: 'devices', title: 'Devices', blurb: 'keys · remotes · TPMS', cat: 'Receive' },
   { id: 'js8', title: 'JS8', blurb: 'HF chat · groups', cat: 'Receive' },
   { id: 'ham', title: 'Ham Radio', blurb: 'SSB · CW · repeaters', cat: 'Receive' },
-  { id: 'hamplus', title: 'Repeaters', blurb: 'every repeater and simplex channel at once', cat: 'Receive' },
+  { id: 'hamplus', title: 'Repeaters', blurb: 'every repeater and simplex at once', cat: 'Receive' },
   { id: 'cb', title: 'CB Radio', blurb: 'all 40 channels at once', cat: 'Receive' },
   { id: 'gmrs', title: 'GMRS', blurb: 'all 30 channels and MURS at once', cat: 'Receive' },
   { id: 'aprs', title: 'Ham Map', blurb: 'APRS · FT8 · JS8', cat: 'Receive' },
   { id: 'ert', title: 'Utility Meters', blurb: 'ERT · Gridstream · 802.15.4g', cat: 'Receive' },
-  { id: 'btle', title: 'Bluetooth', blurb: 'BLE advertising · 2.4 GHz', cat: 'Receive' },
+  { id: 'btle', title: 'Bluetooth', blurb: 'BLE advertising · 2.4 GHz', cat: 'Receive' },
   { id: 'sat', title: 'Satellites', blurb: 'track and decode', cat: 'Receive' },
   { id: 'satcom', title: 'Satcom', blurb: 'Inmarsat · EGC · Aero ACARS', cat: 'Receive' },
-  { id: 'sondes', title: 'Weather Balloons', blurb: 'radiosondes · 400–406 MHz', cat: 'Receive' },
+  { id: 'sondes', title: 'Weather Balloons', blurb: 'radiosondes · 400–⁠406 MHz', cat: 'Receive' },
   { id: 'atsc', title: 'TV', blurb: 'ATSC · guide · pictures', cat: 'Receive' },
   { id: 'prowl', title: 'Prowl', blurb: 'hunts live voice', cat: 'Receive' },
   { id: 'spectrum', title: 'Spectrum', blurb: 'analyzer, zero span', cat: 'Analyze' },
@@ -2151,7 +2151,7 @@ function renderLauncher(view: HTMLElement): void {
     <section class="controls launch-side"><div class="grid launch-grid">${(['Receive', 'Analyze', 'Transmit', 'Tools'] as const).map(c => {
       const apps = APPS.filter(a => a.cat === c && !MERGED_INTO[a.id]); if (!apps.length) return '';
       // each group's name over its tiles: a grid two to a row on a phone, one sideways row when wide (as on iPad)
-      return `<div class="lgrp"><div class="gcat" style="color:${tint(c)}">${c.toUpperCase()}</div><div class="lgrp-in">` + apps.map(a => `<button class="tile" data-app="${a.id}" style="--tint:${tint(a.cat)}"><span class="wm">${glyph(a.id, tintHex(a.cat), 84)}</span><div class="tile-top"><span class="badge">${glyph(a.id, tintHex(a.cat), 26)}</span><span class="cat">${a.cat.toUpperCase()}</span></div><div class="tile-title">${a.title}</div><div class="tile-blurb" data-blurb="${a.blurb}">${a.blurb}</div></button>`).join('') + '</div></div>';
+      return `<div class="lgrp"><div class="gcat" style="color:${tint(c)}">${c.toUpperCase()}</div><div class="lgrp-in">` + apps.map(a => `<button class="tile" data-app="${a.id}" style="--tint:${tint(a.cat)}"><span class="wm">${glyph(a.id, tintHex(a.cat), 84)}</span><div class="tile-top"><span class="badge">${glyph(a.id, tintHex(a.cat), 26)}</span><span class="cat">${a.cat.toUpperCase()}</span></div><div class="tile-title${a.title.length > 12 ? ' long' : ''}">${a.title}</div><div class="tile-blurb" data-blurb="${a.blurb}">${a.blurb}</div></button>`).join('') + '</div></div>';
     }).join('')}</div>
     <div class="foot"><span id="version">${versionText}</span> · <a id="release-link" href="${releaseUrl}">release</a> · <a href="https://github.com/RocketGod-git/mayhem-mobile">source</a> · GPL-3.0 · a port of <a href="https://github.com/portapack-mayhem/mayhem-firmware">PortaPack Mayhem</a><br>made by <a href="https://rocketgod.dev">RocketGod</a> · The Pirates' Plunder · <a href="https://discord.gg/thepirates">discord.gg/thepirates</a></div></section>`;
   scope = attach(tunableScope('launch-scope', 70, 90));

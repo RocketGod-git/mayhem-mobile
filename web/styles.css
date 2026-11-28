@@ -190,7 +190,7 @@ body.offspan .scope .zoomctl [data-c] { display: inline-block; }
 .tile-top .badge svg { width: 22px; height: 22px; }
 .tile .cat { color: var(--muted); font-size: 7px; letter-spacing: 1.5px; }
 .tile-title { margin-top: auto; font-weight: 700; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.tile-blurb { color: var(--muted); font-size: 8px; line-height: 1.25; margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tile-blurb { color: var(--muted); font-size: 8px; line-height: 1.25; margin-top: 2px; overflow: hidden; height: 2.5em; flex: none; }
 
 /* SAME / EAS weather alert: a loud banner across the top of the audio app; tap to dismiss. */
 .samealert { background: color-mix(in srgb, var(--danger) 24%, var(--surface)); border: 1px solid var(--danger);
@@ -613,7 +613,7 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
   .tile-top svg { width: 36px; height: 36px; }
   .tile .cat { font-size: 8px; letter-spacing: 2px; }
   .tile-title { font-size: 15px; white-space: normal; }
-  .tile-blurb { font-size: 9.5px; max-height: none; }
+  .tile-blurb { font-size: 9.5px; }
   .visual > .readout, .visual > .health, .visual > .levelbar, .visual > .launch-bands { flex: none; }
   /* Transmit has no waterfall — a centered control panel reads far better than the waterfall split's empty pane. */
   .view.transmit { display: grid; grid-template-columns: minmax(0, 760px); justify-content: center; align-content: start; gap: 4px; }
@@ -3626,3 +3626,5 @@ main#view.view:is(.hamplus, .cb, .gmrs).hpwide { display: grid; grid-template-co
 .fl-plan.none { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; font-size: 11px; color: var(--accent2); }
 .fl-plan .fl-planb { margin-left: auto; }
 .src .txin.num.rp-known { width: 120px; }
+/* a long tile title stays on one line, a size smaller (as on Android), so every title lines up */
+.tile .tile-title.long { white-space: nowrap; font-size: 12.5px; }
