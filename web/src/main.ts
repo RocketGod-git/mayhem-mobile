@@ -11223,6 +11223,30 @@ function armAudioResume(): void {
   document.addEventListener('visibilitychange', () => { if (!document.hidden) go(); });
   addEventListener('focus', go);
 }
+/**
+ * Keep a receiving tab at full speed in the background. Browsers slow a hidden tab (timers, CPU priority, sleeping
+ * tabs) unless it holds a lock or plays sound, so while a radio runs it holds a Web Lock, and while hidden it plays a
+ * 20 Hz tone at -60 dB, far below hearing, straight to the output so MUTE leaves it on.
+ */
+let awakeRelease: (() => void) | null = null, awakeAsked = false, awakeTone: OscillatorNode | null = null;
+function syncKeepAwake(): void {
+  const on = !!radio?.running;
+  if (on && !awakeAsked && navigator.locks) {
+    awakeAsked = true;
+    void navigator.locks.request('mayhem-radio', () => new Promise<void>(r => { awakeRelease = r; })).catch(() => { awakeAsked = false; });
+  }
+  if (!on && awakeRelease) { awakeRelease(); awakeRelease = null; awakeAsked = false; }
+  const tone = on && document.hidden && audioCtx?.state === 'running';
+  if (tone && !awakeTone && audioCtx) {
+    const o = audioCtx.createOscillator(), g = audioCtx.createGain();
+    o.frequency.value = 20; g.gain.value = 0.001;
+    o.connect(g).connect(audioCtx.destination); o.start(); awakeTone = o;
+  }
+  if (!tone && awakeTone) { awakeTone.stop(); awakeTone.disconnect(); awakeTone = null; }
+}
+document.addEventListener('visibilitychange', syncKeepAwake);
+setInterval(syncKeepAwake, 2_000);
+(window as unknown as { mmAwake: () => unknown }).mmAwake = () => ({ running: !!radio?.running, lock: !!awakeRelease, asked: awakeAsked, tone: !!awakeTone, audio: audioCtx?.state ?? 'none' });   // support hook: keep-awake state
 /** Called from anything that means "the user wants to hear this now". */
 function wakeAudio(): void {
   if (audioCtx && audioCtx.state !== 'running') void audioCtx.resume();
