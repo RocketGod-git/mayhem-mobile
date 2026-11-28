@@ -774,7 +774,7 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
 .volcard > .chip.muted { background: color-mix(in srgb, var(--danger) 18%, var(--surface)); color: var(--danger); border-color: var(--danger); }
 .volcard > input[type=range] { flex: 1; width: auto; }
 .volcard > .volv { flex: none; color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; min-width: 34px; text-align: right; }
-.home-vol { margin: 6px 0 0; }
+.home-vol { margin: 6px 0 10px; }
 /* An on/off box the height of a bar, lit and glowing when on; an icon box; the one filled action of a panel. */
 .tog { background: var(--surface); color: var(--muted); border: 1px solid var(--line); border-radius: 12px; padding: 8px 12px; font-weight: 700; font-size: 12px; letter-spacing: 1.5px; cursor: pointer; white-space: nowrap; }
 .tog.on { color: var(--ink); background: color-mix(in srgb, var(--accent) 24%, var(--surface)); border-color: var(--accent); box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 28%, transparent); }
