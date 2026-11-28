@@ -398,6 +398,8 @@ drainPort.port1.onmessage = () => {
   while (queue.length && performance.now() - t0 < 8) process(queue.shift()!);
   armDrain();
 };
+/** Samples processed since the last health line. */
+let dspSamples = 0;
 /** A frequency correction measurement under way (RADIO panel, MEASURE). */
 let meter: CarrierMeter | null = null;
 function armDrain(): void { if (!drainArmed && queue.length) { drainArmed = true; drainPort.port2.postMessage(0); } }
@@ -633,7 +635,11 @@ function process(iq: Int8Array): void {
       const sigs = classifier.update(pdb, rate, centreHz, median);
       post({ type: 'signals', list: sigs.map(s => ({ hz: s.hz, db: s.db, snr: s.snr, bw: s.bw6, cls: s.cls, conf: s.conf, val: Math.min(1, Math.max(0, (s.db - base) / SPEC_RANGE_DB)) })) });
     }
+    dspSamples += nSamp;
     if (now - lastDiag > 1000) {
+      // how much of the radio's real time this second's work covered: under 100% the decoder is falling behind
+      const dspPct = lastDiag ? Math.round(100 * dspSamples / (rate * (now - lastDiag) / 1000)) : 100;
+      dspSamples = 0;
       lastDiag = now;
       let sI = 0, sQ = 0, sSq = 0;
       const nn = Math.min(nSamp, 4096);
@@ -642,9 +648,10 @@ function process(iq: Int8Array): void {
       let peak = -999, peakIdx = 0;
       for (let k = 0; k < bins; k++) if (pdb[k] > peak) { peak = pdb[k]; peakIdx = k; }
       const offKhz = (peakIdx - bins / 2) * (rate / bins) / 1000;
-      const line = `RX: iqRMS=${rms.toFixed(1)} dcI=${(sI / nn).toFixed(1)} dcQ=${(sQ / nn).toFixed(1)} · peak ${offKhz >= 0 ? '+' : ''}${offKhz.toFixed(0)} kHz ${peak.toFixed(0)}dB vs floor ${median.toFixed(0)}dB (Δ${(peak - median).toFixed(0)})`;
+      let line = `RX: iqRMS=${rms.toFixed(1)} dcI=${(sI / nn).toFixed(1)} dcQ=${(sQ / nn).toFixed(1)} · peak ${offKhz >= 0 ? '+' : ''}${offKhz.toFixed(0)} kHz ${peak.toFixed(0)}dB vs floor ${median.toFixed(0)}dB (Δ${(peak - median).toFixed(0)})`;
       // LoRa's gain steers by its strongest burst and its clips (loraAgc in main), measured in the scanner's looks
       const loraLevel = processor === lora ? { ...lora.scanner.takeLevel(), agoMs: lora.scanner.loraAtMs > 0 ? Date.now() - lora.scanner.loraAtMs : -1 } : undefined;
+      if (dspPct < 97) line += ` · DSP ${dspPct}% of real time`;
       post({ type: 'health', line: processor === ham || processor === monitor || processor === hamplus || processor === cb || processor === gmrs || processor === murs ? `${line} · audio chunks ${audioChunks}${audioPort ? '' : ' (NO PORT)'}` : line, levelDb: peak - median, audioPeak, rms, audio: mode !== 'NONE', lora: loraLevel });
       audioPeak = 0;
     }
