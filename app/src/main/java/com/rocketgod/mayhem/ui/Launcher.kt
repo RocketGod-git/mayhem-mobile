@@ -224,7 +224,7 @@ private fun AppTile(app: MayhemApp, d: Dims, onClick: () -> Unit) {
             Text(app.title, color = if (off) Palette.muted else Palette.ink, fontFamily = Mono, fontWeight = FontWeight.Bold,
                 fontSize = d.sp(if (app.title.length > 12) 13f else 15f), maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
             Text(if (off) "needs a HackRF" else app.blurb, color = Palette.muted,
-                fontFamily = Mono, fontSize = d.sp(9.5f), maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = d.dp(3f)))
+                fontFamily = Mono, fontSize = d.sp(9.5f), minLines = 2, maxLines = 2, lineHeight = d.sp(11.5f), modifier = Modifier.padding(top = d.dp(3f)))
         }
     }
 }
