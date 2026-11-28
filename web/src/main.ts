@@ -11183,7 +11183,7 @@ async function ensureAudio(): Promise<void> {
     audioCtx = new AudioContext({ sampleRate: 48_000, latencyHint: 'playback' });
     await audioCtx.audioWorklet.addModule('./audio-worklet.js');
     // 6 outputs where the device has them; the unused four stay silent and a stereo destination downmixes them away
-    const node = new AudioWorkletNode(audioCtx, 'mayhem-player', { outputChannelCount: [audioCtx.destination.maxChannelCount >= 6 ? 6 : 2] });
+    const node = playerNode = new AudioWorkletNode(audioCtx, 'mayhem-player', { outputChannelCount: [audioCtx.destination.maxChannelCount >= 6 ? 6 : 2] });
     appGain = audioCtx.createGain(); applyAppGain();
     muteGain = audioCtx.createGain(); muteGain.gain.value = state.muted ? 0 : 1;
     node.connect(appGain); appGain.connect(muteGain); muteGain.connect(audioCtx.destination);
@@ -11206,6 +11206,8 @@ async function ensureAudio(): Promise<void> {
   void audioCtx.resume().catch(() => { /* resumed on the first gesture instead */ });
 }
 let audioArmed = false;
+/** The audio player, told to keep a deeper cushion while the tab is hidden. */
+let playerNode: AudioWorkletNode | null = null;
 /**
  * Keep nudging the audio context back awake.
  *
@@ -11244,7 +11246,7 @@ function syncKeepAwake(): void {
   }
   if (!tone && awakeTone) { awakeTone.stop(); awakeTone.disconnect(); awakeTone = null; }
 }
-document.addEventListener('visibilitychange', syncKeepAwake);
+document.addEventListener('visibilitychange', () => { syncKeepAwake(); playerNode?.port.postMessage({ type: 'cushion', sec: document.hidden ? 0.6 : 0.2 }); });
 setInterval(syncKeepAwake, 2_000);
 (window as unknown as { mmAwake: () => unknown }).mmAwake = () => ({ running: !!radio?.running, lock: !!awakeRelease, asked: awakeAsked, tone: !!awakeTone, audio: audioCtx?.state ?? 'none' });   // support hook: keep-awake state
 /** Called from anything that means "the user wants to hear this now". */

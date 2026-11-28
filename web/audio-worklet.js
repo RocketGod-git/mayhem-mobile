@@ -35,9 +35,17 @@ class MayhemPlayer extends AudioWorkletProcessor {
   }
   // a Float32Array plays on both sides; { l, r } is stereo; { ch: [L, R, C, LFE, Ls, Rs] } is 5.1
   take(d) {
+    // a hidden tab gets its audio in bursts: a deeper cushion there, back to the normal one when the tab is shown
+    if (d && d.type === 'cushion') { this.setCushion(d.sec); return; }
     if (d instanceof Float32Array) this.push([d, d]);
     else if (d && d.l instanceof Float32Array && d.r instanceof Float32Array) this.push([d.l, d.r]);
     else if (d && Array.isArray(d.ch) && d.ch.length >= 2 && d.ch.every((x) => x instanceof Float32Array)) this.push(d.ch);
+  }
+  setCushion(sec) {
+    const want = Math.round(48000 * sec);
+    if (want > this.preroll && this.count < want) this.primed = false;   // one short wait now, instead of gaps all along
+    else if (want < this.preroll && this.count > want * 1.25) { const drop = this.count - want; this.r = (this.r + drop) % this.cap; this.count -= drop; }
+    this.preroll = want;
   }
   push(src) {
     const n = src[0].length, b = this.bufs, m = Math.min(src.length, 6);
