@@ -596,6 +596,7 @@ async function captureCmd(m: Record<string, unknown>): Promise<void> {
 function process(iq: Int8Array): void {
   const nSamp = iq.length >> 1;
   if (nSamp < 4) return;
+  dspSamples += nSamp;
   const p = processor;
   if (p && (p !== lastProc || rate !== lastProcRate)) { try { p.reset(rate); } catch (e) { emit({ type: 'log', line: `processor reset: ${(e as Error).message}` }); } lastProc = p; lastProcRate = rate; }
   else if (!p) lastProc = null;
@@ -635,7 +636,6 @@ function process(iq: Int8Array): void {
       const sigs = classifier.update(pdb, rate, centreHz, median);
       post({ type: 'signals', list: sigs.map(s => ({ hz: s.hz, db: s.db, snr: s.snr, bw: s.bw6, cls: s.cls, conf: s.conf, val: Math.min(1, Math.max(0, (s.db - base) / SPEC_RANGE_DB)) })) });
     }
-    dspSamples += nSamp;
     if (now - lastDiag > 1000) {
       // how much of the radio's real time this second's work covered: under 100% the decoder is falling behind
       const dspPct = lastDiag ? Math.round(100 * dspSamples / (rate * (now - lastDiag) / 1000)) : 100;
